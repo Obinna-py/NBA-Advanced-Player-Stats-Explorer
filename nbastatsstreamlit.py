@@ -229,18 +229,14 @@ if st.button("Search"):
 if 'matches' in st.session_state and st.session_state['matches']:
     matches = st.session_state['matches']
     st.write("Multiple players found with that name:")
-    for idx, p in enumerate(matches):
-        st.write(f"{idx + 1}: {p['full_name']} (ID: {p['id']})")
+    options = {f"{p['full_name']} (ID: {p['id']})": p for p in matches}
+    selected = st.radio("Select a player:", list(options.keys()), index=None, key="player_selection_radio")
 
-    selected = st.text_input("Enter the number of the player you meant:", key="player_selection")
+    if selected:
+        st.session_state['player'] = options[selected]
+        st.session_state['matches'] = []  # Clear matches after selection
+        st.rerun()
 
-    if selected.isdigit() and 0 < int(selected) <= len(matches):
-        player = matches[int(selected) - 1]
-        st.session_state['player'] = player
-        st.session_state['matches'] = []  
-        # Instead of modifying player_selection directly, rerun
-        st.session_state['player_selection_clear'] = True  # Custom flag
-        st.rerun()  # ✅ Force app to re-run with new state
 
 if 'player' in st.session_state:
     player = st.session_state['player']
@@ -385,19 +381,25 @@ if 'player' in st.session_state:
             other_matches = players.find_players_by_full_name(other_name)
             exact_matches = [p for p in other_matches if p['full_name'].lower() == other_name.lower()]
             other_matches = exact_matches if exact_matches else other_matches
+            if "other_matches" not in st.session_state:
+                st.session_state['other_matches'] = []
 
             if other_matches:
+                st.session_state['other_matches'] = other_matches
                 if len(other_matches) > 1:
-                    st.write("Multiple players found:")
-                    for idx, p in enumerate(other_matches):
-                        st.write(f"{idx + 1}: {p['full_name']} (ID: {p['id']})")
-                    other_selected = st.text_input("Enter the number for the second player:")
-                    if other_selected.isdigit() and 0 < int(other_selected) <= len(other_matches):
-                        other_player = other_matches[int(other_selected) - 1]
-                    else:
-                        other_player = None
+                    st.write("Multiple players found with that name:")
+
+                    options2 = {f"{p['full_name']} (ID: {p['id']})": p for p in other_matches}
+
+                    other_selected = st.radio("Select a player:",list(options2.keys()),index = None, key="other_player_selection_radio" )
+
+                    if other_selected:
+                        st.session_state['other_player'] = options2[other_selected]
+                        st.session_state['other_matches'] = []  # Clear matches after selection
                 else:
-                    other_player = other_matches[0]
+                    st.session_state['other_player'] = other_matches[0]
+
+                other_player = st.session_state.get('other_player', None)
 
                 if other_player:
                     st.write(f"You selected: {other_player['full_name']}")
