@@ -2,7 +2,7 @@
 # NBA Advanced Player Stats Explorer — polished UI + session-state selections
 
 from nba_api.stats.static import players
-from nba_api.stats.endpoints import playercareerstats, commonplayerinfo
+from nba_api.stats.endpoints import playercareerstats, commonplayerinfo, leaguedashteamstats
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -21,65 +21,160 @@ if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_API_KEY_HERE":
 else:
     model = None  # AI features disabled if no key
 
+@st.cache_data(ttl=3600)
+def get_team_totals_for_season(season: str) -> pd.DataFrame:
+    """
+    Fetch team totals for a given season (team-level box totals).
+    We normalize column names and guarantee presence of fields used by compute_full_advanced_stats.
+    """
+    df = leaguedashteamstats.LeagueDashTeamStats(
+        season=season,
+        per_mode_detailed="Totals",
+        measure_type_detailed_defense="Base",
+    ).get_data_frames()[0]
+
+    # columns that we actually use downstream; include safe fallbacks
+    needed = [
+        "TEAM_ID", "MIN", "FGA", "FTA", "TOV", "FGM",
+        "REB", "OREB", "DREB",
+        # Opponent rebound fields are not always present in this endpoint;
+        # we include them if they exist; else we fill with 0 and the code will fall back.
+        "OPP_REB", "OPP_OREB", "OPP_DREB",
+    ]
+
+    # Ensure columns exist; fill missing with 0
+    for col in needed:
+        if col not in df.columns:
+            df[col] = 0
+
+    # No need to rename REB -> TRB here; keep NBA column names consistent
+    # If you want TRB, derive it explicitly later.
+    out = df[needed].copy()
+
+    # Also compute explicit TRB (team total rebounds) if you prefer that name downstream
+    if "TRB" not in out.columns:
+        out["TRB"] = out["REB"]  # NBA calls it REB; alias as TRB for convenience
+
+    return out
+
+
 # ============ HELPERS ============
 def compute_full_advanced_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute enhanced/advanced stats with safe guards; returns rounded copy."""
-    df = df.copy()
+    """
+    Adds: TS%, eFG%, PPS, 3PAr, FTr, per-36 stats,
+          team-based USG% (true), AST%,
+          and rebound rates ORB%/DRB%/TRB% (team + opponent context where available).
 
-    # Avoid division-by-zero issues by treating zeros as NaN for derived stats
-    # (Keep original numeric columns intact)
-    # Traditional percentages (NBA API returns _PCT as decimals)
-    if 'FG_PCT' in df.columns: df['FG%'] = df['FG_PCT'] * 100
-    if 'FG3_PCT' in df.columns: df['3P%'] = df['FG3_PCT'] * 100
-    if 'FT_PCT' in df.columns: df['FT%'] = df['FT_PCT'] * 100
+    Works on the career dataframe from PlayerCareerStats (per_mode36='PerGame' or 'Totals').
+    """
+    out = df.copy()
 
-    # TS% = PTS / (2 * (FGA + 0.44 * FTA))
-    df['TS%'] = df.apply(
-        lambda r: (r['PTS'] / (2 * (r['FGA'] + 0.44 * r['FTA'])) * 100)
+    # ---------- Shooting & efficiency (no team context)
+    if 'FG_PCT' in out.columns: out['FG%'] = out['FG_PCT'] * 100
+    if 'FG3_PCT' in out.columns: out['3P%'] = out['FG3_PCT'] * 100
+    if 'FT_PCT' in out.columns: out['FT%'] = out['FT_PCT'] * 100
+
+    out['TS%'] = out.apply(
+        lambda r: (r.get('PTS', 0) / (2 * (r.get('FGA', 0) + 0.44 * r.get('FTA', 0))) * 100)
         if (r.get('FGA', 0) + 0.44 * r.get('FTA', 0)) > 0 else np.nan, axis=1
     )
-
-    # eFG% = (FGM + 0.5 * FG3M) / FGA
-    df['EFG%'] = df.apply(
+    out['EFG%'] = out.apply(
         lambda r: ((r.get('FGM', 0) + 0.5 * r.get('FG3M', 0)) / r.get('FGA', 0) * 100)
         if r.get('FGA', 0) > 0 else np.nan, axis=1
     )
+    out['PPS']  = out.apply(lambda r: (r.get('PTS', 0) / r.get('FGA', 0)) if r.get('FGA', 0) > 0 else np.nan, axis=1)
+    out['3PAr'] = out.apply(lambda r: (r.get('FG3A', 0) / r.get('FGA', 0)) if r.get('FGA', 0) > 0 else np.nan, axis=1)
+    out['FTr']  = out.apply(lambda r: (r.get('FTA', 0) / r.get('FGA', 0)) if r.get('FGA', 0) > 0 else np.nan, axis=1)
+    out['AST/TO'] = out.apply(lambda r: (r.get('AST', 0) / r.get('TOV', 0)) if r.get('TOV', 0) > 0 else np.nan, axis=1)
 
-    # Assist-to-Turnover
-    df['AST/TO'] = df.apply(lambda r: (r.get('AST', 0) / r.get('TOV', 0)) if r.get('TOV', 0) > 0 else np.nan, axis=1)
-
-    # Points Per Shot
-    df['PPS'] = df.apply(lambda r: (r.get('PTS', 0) / r.get('FGA', 0)) if r.get('FGA', 0) > 0 else np.nan, axis=1)
-
-    # Very rough PER-ish estimate per season (not official)
-    df['PER'] = df.apply(
-        lambda r: ((r.get('PTS', 0) + r.get('REB', 0) + r.get('AST', 0) + r.get('STL', 0) + r.get('BLK', 0)
-                   - (r.get('FGA', 0) - r.get('FGM', 0)) - (r.get('FTA', 0) - r.get('FTM', 0)) - r.get('TOV', 0))
-                  / r.get('GP', 0)) if r.get('GP', 0) > 0 else np.nan, axis=1
-    )
-
-    # Per-36
+    # ---------- Per-36 rates
     def per36(r, col):
         mins = r.get('MIN', 0)
         return (r.get(col, 0) / mins) * 36 if mins and mins > 0 else np.nan
 
-    for stat in ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FGM', 'FGA', 'FG3M', 'OREB', 'DREB']:
-        df[f'{stat}/36'] = df.apply(lambda r, c=stat: per36(r, c), axis=1)
+    for stat in ['PTS','REB','AST','STL','BLK','TOV','FGM','FGA','FG3M','OREB','DREB']:
+        out[f'{stat}/36'] = out.apply(lambda r, c=stat: per36(r, c), axis=1)
 
-    # Usage% (very rough, per-minute proxy)
-    df['USG% (est)'] = df.apply(
-        lambda r: (100 * (r.get('FGA', 0) + 0.44 * r.get('FTA', 0) + r.get('TOV', 0)) / r.get('MIN', 0))
-        if r.get('MIN', 0) else np.nan, axis=1
-    )
+    # ---------- Team-context rates (true USG%, AST%, ORB%, DRB%, TRB%)
+    def _team_rates(row):
+        season = row.get('SEASON_ID')
+        team_id = row.get('TEAM_ID')
+        mp     = row.get('MIN', 0)
 
-    # Housekeeping: round floats for display
-    float_cols = df.select_dtypes(include=['float', 'float64', 'float32']).columns
-    df[float_cols] = df[float_cols].round(2)
+        # Skip rows without a concrete team (e.g., "TOT") or no minutes
+        if not season or not team_id or pd.isna(team_id) or team_id == 0 or not mp:
+            return pd.Series({'USG% (true)': np.nan, 'AST%': np.nan, 'ORB%': np.nan, 'DRB%': np.nan, 'TRB%': np.nan})
 
-    # Drop raw % columns to avoid duplication
-    df = df.drop(columns=['FG_PCT', 'FG3_PCT', 'FT_PCT'], errors='ignore')
+        teams = get_team_totals_for_season(season)
+        team  = teams[teams['TEAM_ID'] == team_id]
+        if team.empty:
+            return pd.Series({'USG% (true)': np.nan, 'AST%': np.nan, 'ORB%': np.nan, 'DRB%': np.nan, 'TRB%': np.nan})
 
-    return df
+        tMIN   = float(team.iloc[0]['MIN']   or 0.0)
+        tFGA   = float(team.iloc[0]['FGA']   or 0.0)
+        tFTA   = float(team.iloc[0]['FTA']   or 0.0)
+        tTOV   = float(team.iloc[0]['TOV']   or 0.0)
+        tFGM   = float(team.iloc[0]['FGM']   or 0.0)
+        tTRB   = float(team.iloc[0]['TRB']   or team.iloc[0].get("REB", 0) or 0.0)
+        tOREB  = float(team.iloc[0]['OREB']  or 0.0)
+        tDREB  = float(team.iloc[0]['DREB']  or 0.0)
+        oTRB   = float(team.iloc[0]['OPP_REB']  or 0.0)
+        oOREB  = float(team.iloc[0]['OPP_OREB'] or 0.0)
+        oDREB  = float(team.iloc[0]['OPP_DREB'] or 0.0)
+
+        if tMIN <= 0:
+            return pd.Series({'USG% (true)': np.nan, 'AST%': np.nan, 'ORB%': np.nan, 'DRB%': np.nan, 'TRB%': np.nan})
+
+        # --- True Usage%
+        denom_usg = (tFGA + 0.44 * tFTA + tTOV)
+        if denom_usg > 0 and mp > 0:
+            usg_true = 100.0 * ((row.get('FGA', 0) + 0.44 * row.get('FTA', 0) + row.get('TOV', 0)) * (tMIN / 5.0)) / (mp * denom_usg)
+        else:
+            usg_true = np.nan
+
+        # --- AST% (classic):
+        # 100 * AST / [ (MIN/TeamMIN) * TeamFGM - FGM ]
+        denom_ast = ((mp / tMIN) * tFGM) - row.get('FGM', 0)
+        ast_pct = 100.0 * row.get('AST', 0) / denom_ast if denom_ast not in [0, np.nan] else np.nan
+
+        # --- Rebound rates (need team + opponent rebounds; if opponent missing, fall back to team-only approx)
+        # ORB% = 100 * ORB * (TeamMIN/5) / ( MIN * (TeamORB + OppDRB) )
+        # DRB% = 100 * DRB * (TeamMIN/5) / ( MIN * (TeamDRB + OppORB) )
+        # TRB% = 100 * TRB * (TeamMIN/5) / ( MIN * (TeamTRB + OppTRB) )
+        # Fallback approx if opponent columns are missing: use team-only denominators.
+        opp_dreb = oDREB if oDREB > 0 else np.nan
+        opp_oreb = oOREB if oOREB > 0 else np.nan
+        opp_trb  = oTRB  if oTRB  > 0 else np.nan
+
+        # ORB%
+        denom_orb = (tOREB + (opp_dreb if not np.isnan(opp_dreb) else 0.0))
+        orb_pct = 100.0 * row.get('OREB', 0) * (tMIN / 5.0) / (mp * denom_orb) if (mp > 0 and denom_orb > 0) else np.nan
+
+        # DRB%
+        denom_drb = (tDREB + (opp_oreb if not np.isnan(opp_oreb) else 0.0))
+        drb_pct = 100.0 * row.get('DREB', 0) * (tMIN / 5.0) / (mp * denom_drb) if (mp > 0 and denom_drb > 0) else np.nan
+
+        # TRB%
+        denom_trb = (tTRB + (opp_trb if not np.isnan(opp_trb) else 0.0))
+        trb_pct = 100.0 * row.get('REB', 0) * (tMIN / 5.0) / (mp * denom_trb) if (mp > 0 and denom_trb > 0) else np.nan
+
+        return pd.Series({
+            'USG% (true)': usg_true,
+            'AST%': ast_pct,
+            'ORB%': orb_pct,
+            'DRB%': drb_pct,
+            'TRB%': trb_pct
+        })
+
+    rates = out.apply(_team_rates, axis=1)
+    out = pd.concat([out, rates], axis=1)
+
+    # ---------- Cleanup
+    float_cols = out.select_dtypes(include=['float', 'float64', 'float32']).columns
+    out[float_cols] = out[float_cols].round(2)
+    out = out.drop(columns=['FG_PCT', 'FG3_PCT', 'FT_PCT'], errors='ignore')
+
+    return out
 
 
 def generate_player_summary(player_name: str, stats_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
@@ -98,13 +193,17 @@ def generate_player_summary(player_name: str, stats_df: pd.DataFrame, adv_df: pd
         if 'FG%' in s:
             lines.append(f"- **FG%:** {s['FG%']:.1f}%, **3P%:** {s['3P%']:.1f}%, **FT%:** {s['FT%']:.1f}%")
         lines.append(f"- **TS%:** {a.get('TS%', np.nan):.2f}%, **EFG%:** {a.get('EFG%', np.nan):.2f}%, **PPS:** {a.get('PPS', np.nan):.2f}")
-        lines.append(f"- **USG% (est):** {a.get('USG% (est)', np.nan):.2f}%")
+        lines.append(f"- **USG% (true):** {a.get('USG% (true)', np.nan):.2f}%")
         lines.append(
             f"- **PTS/36:** {a.get('PTS/36', np.nan):.2f}, **REB/36:** {a.get('REB/36', np.nan):.2f}, "
             f"**AST/36:** {a.get('AST/36', np.nan):.2f}, **STL/36:** {a.get('STL/36', np.nan):.2f}, "
             f"**BLK/36:** {a.get('BLK/36', np.nan):.2f}, **TOV/36:** {a.get('TOV/36', np.nan):.2f}"
         )
         lines.append(f"- **AST/TO Ratio:** {a.get('AST/TO', np.nan):.2f}\n")
+        lines.append(f"- **3PAr:** {a.get('3PAr', np.nan):.2f}, **FTr:** {a.get('FTr', np.nan):.2f}\n")
+        lines.append(f"- **FGM/36:** {a.get('FGM/36', np.nan):.2f}, **FGA/36:** {a.get('FGA/36', np.nan):.2f}, **3PM/36:** {a.get('FG3M/36', np.nan):.2f}\n")
+        lines.append(f"- **OREB/36:** {a.get('OREB/36', np.nan):.2f}, **DREB/36:** {a.get('DREB/36', np.nan):.2f}\n")
+        lines.append(f"- **AST%:** {a.get('AST%', np.nan):.2f}%, **ORB%:** {a.get('ORB%', np.nan):.2f}%, **DRB%:** {a.get('DRB%', np.nan):.2f}%, **TRB%:** {a.get('TRB%', np.nan):.2f}%\n")
     return "\n".join(lines)
 
 
