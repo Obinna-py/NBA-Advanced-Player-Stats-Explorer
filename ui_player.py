@@ -6,7 +6,7 @@ from datetime import datetime
 from nba_api.stats.endpoints import commonplayerinfo
 from logos import college_logos
 from fetch import get_player_career
-from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context
+from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols
 from ideas import cached_ai_question_ideas, presets
 from utils import abbrev, public_cols
 
@@ -60,6 +60,8 @@ def stats_tab(player, model):
             adv = compute_full_advanced_stats(adv_source)
     else:
         adv = pd.DataFrame()
+    
+    adv = add_per_game_columns(adv, raw_pergame)
 
     latest_src = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
     if latest_src is not None and not latest_src.empty:
@@ -93,7 +95,7 @@ def stats_tab(player, model):
 
     if adv is not None and not adv.empty:
         cols = public_cols(adv)
-        st.dataframe(adv[cols], use_container_width=True)
+        st.dataframe(adv[metric_public_cols(adv)], use_container_width=True)
         if not speed_mode:
             st.info("Showing latest season advanced metrics. Turn on “ALL seasons” above to compute the full career (slower).")
 

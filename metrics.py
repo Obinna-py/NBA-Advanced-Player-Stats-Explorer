@@ -67,6 +67,52 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
     out = out[[c for c in out.columns if not c.startswith("TEAM_")]]
     return out
 
+def add_per_game_columns(adv_df: pd.DataFrame, per_game_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Left-merge per-game columns (PPG, RPG, APG, TPG, SPG, BPG, MPG, GP) into the advanced table.
+    Works for both team rows and TOT rows. Uses whatever join keys exist in both frames.
+    """
+    if adv_df is None or adv_df.empty or per_game_df is None or per_game_df.empty:
+        return adv_df
+
+    # Columns we want from per-game
+    keep_pg = ['SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'REB', 'AST', 'TOV', 'STL', 'BLK', 'MIN']
+    pg = per_game_df[[c for c in keep_pg if c in per_game_df.columns]].copy()
+
+    # Rename to per-game labels
+    rename_map = {
+        'PTS': 'PPG',
+        'REB': 'RPG',
+        'AST': 'APG',
+        'TOV': 'TPG',
+        'STL': 'SPG',
+        'BLK': 'BPG',
+        'MIN': 'MPG',
+    }
+    pg = pg.rename(columns=rename_map)
+
+    # Build join keys that exist in both dataframes (prefer SEASON_ID + TEAM_ID)
+    join_keys = []
+    for k in ['SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION']:
+        if k in adv_df.columns and k in pg.columns:
+            join_keys.append(k)
+    if 'SEASON_ID' not in join_keys:
+        # Can't safely merge without season; just return adv as-is
+        return adv_df
+
+    merged = adv_df.merge(pg, on=join_keys, how='left')
+
+    # Round per-game columns nicely
+    for c in ['PPG', 'RPG', 'APG', 'TPG', 'SPG', 'BPG', 'MPG']:
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors='coerce').round(1)
+
+    if 'GP' in merged.columns:
+        merged['GP'] = pd.to_numeric(merged['GP'], errors='coerce').fillna(0).astype(int)
+
+    return merged
+
+
 def generate_player_summary(player_name: str, stats_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
     if stats_df is None or stats_df.empty:
         return f"No available stats for {player_name}."
@@ -100,3 +146,40 @@ def compact_player_context(df: pd.DataFrame) -> dict:
         "usg": g("USG% (true)") if "USG% (true)" in row else np.nan,
         "mpg": g("MIN"),
     }
+
+_DISPLAY_PRIORITY = [
+    # identity/context
+    "SEASON_ID", "TEAM_ABBREVIATION",
+    # per-game
+    "GP", "MPG", "PPG", "RPG", "APG", "SPG", "BPG", "TPG",
+    # core advanced (summary)
+    "TS%", "EFG%", "PPS", "3PAr", "FTr", "USG% (true)", "AST%", "TRB%", "ORB%", "DRB%", "AST/TO",
+    # per-36
+    "PTS/36", "REB/36", "AST/36", "STL/36", "BLK/36", "TOV/36", "FGM/36", "FGA/36", "FG3M/36", "OREB/36", "DREB/36",
+    # shooting splits (if present)
+    "FG%", "3P%", "FT%",
+]
+
+# Hide these IDs & internal columns from tables
+_HIDDEN_EXACT = {"PLAYER_ID", "TEAM_ID", "LEAGUE_ID", "SEASON_START", "CFID", "CFPARAMS"}
+_HIDDEN_PREFIXES = ("TEAM_",)  # e.g., merged team context columns
+
+def order_columns_for_display(df):
+    """Return a reordered list of columns with high-priority fields first."""
+    if df is None or df.empty:
+        return []
+    priority = [c for c in _DISPLAY_PRIORITY if c in df.columns]
+    rest = [c for c in df.columns if c not in priority]
+    return priority + rest
+
+def metric_public_cols(df):
+    """Filter out internal IDs/team_* and return the display-ordered list."""
+    if df is None or df.empty:
+        return []
+    visible = [c for c in df.columns
+               if c not in _HIDDEN_EXACT and not any(c.startswith(pfx) for pfx in _HIDDEN_PREFIXES)]
+    # keep original df but show in ordered, filtered column set
+    ordered = [c for c in order_columns_for_display(df) if c in visible]
+    # make sure we don't drop any remaining visible columns that weren't in the priority list
+    tail = [c for c in visible if c not in ordered]
+    return ordered + tail

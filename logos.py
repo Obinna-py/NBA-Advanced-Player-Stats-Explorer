@@ -68,5 +68,6 @@ college_logos = {
     "Pittsburgh": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Pitt_Panthers_wordmark.svg/350px-Pitt_Panthers_wordmark.svg.png",
     "St John's": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/St_johns_wordmark_red_2015.png/500px-St_johns_wordmark_red_2015.png",
     "Davidson": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Davidson_Wildcats_logo.png/250px-Davidson_Wildcats_logo.png",
-    "Kansas State": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Kansas_State_Wildcats_wordmark.svg/2880px-Kansas_State_Wildcats_wordmark.svg.png"
+    "Kansas State": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Kansas_State_Wildcats_wordmark.svg/2880px-Kansas_State_Wildcats_wordmark.svg.png",
+    "Mega Basket": "https://upload.wikimedia.org/wikipedia/en/d/da/Mega-logo-2020.png",
 }
