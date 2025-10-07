@@ -135,16 +135,78 @@ def generate_player_summary(player_name: str, stats_df: pd.DataFrame, adv_df: pd
     return "\n".join(lines)
 
 def compact_player_context(df: pd.DataFrame) -> dict:
-    if df is None or df.empty: return {}
+    """
+    Build a tiny, per-game-oriented summary for the latest season row.
+    Prefers PPG/RPG/APG/... columns; falls back to totals/GP if needed.
+    """
+    if df is None or df.empty:
+        return {}
+
     row = df.iloc[-1]
-    g = lambda k, d=np.nan: float(row[k]) if k in row and pd.notna(row[k]) else d
+
+    def _num(val, default=np.nan):
+        try:
+            v = float(val)
+            return v
+        except Exception:
+            return default
+
+    def _get(name: str, default=np.nan):
+        return _num(row[name], default) if name in row and pd.notna(row[name]) else default
+
+    gp = _get("GP", np.nan)
+
+    # Helper to get per-game with fallback from totals
+    def _per_game(primary_pg_col: str, total_col: str):
+        if primary_pg_col in row and pd.notna(row[primary_pg_col]):
+            return _num(row[primary_pg_col], np.nan)
+        tot = _get(total_col, np.nan)
+        if pd.notna(tot) and pd.notna(gp) and gp > 0:
+            return tot / gp
+        return np.nan
+
+    # Per-game metrics (prefer explicit PPG/RPG/APG etc.)
+    ppg = _per_game("PPG", "PTS")
+    rpg = _per_game("RPG", "REB")
+    apg = _per_game("APG", "AST")
+    spg = _per_game("SPG", "STL")
+    bpg = _per_game("BPG", "BLK")
+    tpg = _per_game("TPG", "TOV")  # turnovers per game
+
+    # Efficiency / rates (already per possession/attempt)
+    ts  = _get("TS%")
+    efg = _get("EFG%")
+    usg = _get("USG% (true)")
+    ast_pct = _get("AST%")
+    trb_pct = _get("TRB%")
+
+    # Light sanity clamps to avoid garbage getting into prompts
+    def _clamp(x, lo, hi):
+        return x if (pd.notna(x) and lo <= x <= hi) else np.nan
+
+    ppg = _clamp(ppg, 0, 60)
+    rpg = _clamp(rpg, 0, 25)
+    apg = _clamp(apg, 0, 20)
+    spg = _clamp(spg, 0, 6)
+    bpg = _clamp(bpg, 0, 6)
+    tpg = _clamp(tpg, 0, 8)
+
     return {
         "season": row.get("SEASON_ID", "Unknown"),
         "team": row.get("TEAM_ABBREVIATION", "UNK"),
-        "ppg": g("PTS"), "rpg": g("REB"), "apg": g("AST"),
-        "ts": g("TS%"), "efg": g("EFG%"),
-        "usg": g("USG% (true)") if "USG% (true)" in row else np.nan,
-        "mpg": g("MIN"),
+        "gp": gp,
+        "ppg": ppg,
+        "rpg": rpg,
+        "apg": apg,
+        "spg": spg,
+        "bpg": bpg,
+        "tpg": tpg,
+        "ts": ts,
+        "efg": efg,
+        "usg": usg,
+        "ast_pct": ast_pct,
+        "trb_pct": trb_pct,
+        "mpg": _per_game("MPG", "MIN"),
     }
 
 _DISPLAY_PRIORITY = [
