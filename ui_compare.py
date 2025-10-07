@@ -227,6 +227,75 @@ def render_compare_tab(primary_player: dict, model=None):
     chart_src1 = _add_season_start(chart_src1)
     chart_src2 = _add_season_start(chart_src2)
 
+    # === Custom Season Filter (manual or slider) ===
+
+    def _parse_season_input(s: str | None) -> int | None:
+        """Accepts '2016-17', '2016/17', '2016', '2016-2017' and returns 2016 (SEASON_START)."""
+        if not s:
+            return None
+        s = s.strip()
+        # Take the first 4 consecutive digits as the start year
+        for i in range(len(s) - 3):
+            chunk = s[i:i+4]
+            if chunk.isdigit():
+                yr = int(chunk)
+                if 1946 <= yr <= 2100:
+                    return yr
+        return None
+
+    # Determine overlapping season-start years both players share
+    years1 = set(chart_src1["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src1.columns else set()
+    years2 = set(chart_src2["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src2.columns else set()
+    common_years = sorted(years1 & years2)
+
+    if len(common_years) == 0:
+        st.warning("No overlapping seasons found between these players for charting.")
+        return
+
+    min_year, max_year = min(common_years), max(common_years)
+
+    with st.expander("🔧 Filter seasons to compare", expanded=False):
+        mode = st.radio(
+            "Choose how to set the season range:",
+            ["Slider", "Manual entry"],
+            horizontal=True,
+            key="cmp_season_filter_mode",
+        )
+
+        if mode == "Slider":
+            yr_lo, yr_hi = st.slider(
+                "Season start year range",
+                min_value=min_year,
+                max_value=max_year,
+                value=(min_year, max_year),
+                help="Drag to limit the seasons used in the chart (based on SEASON_START).",
+                key="cmp_season_range_slider",
+            )
+        else:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                txt_lo = st.text_input("Start season (e.g., 2016-17 or 2016)", value=str(min_year), key="cmp_season_lo_txt")
+            with col_b:
+                txt_hi = st.text_input("End season (e.g., 2021-22 or 2021)", value=str(max_year), key="cmp_season_hi_txt")
+
+            parsed_lo = _parse_season_input(txt_lo) or min_year
+            parsed_hi = _parse_season_input(txt_hi) or max_year
+            if parsed_lo > parsed_hi:
+                parsed_lo, parsed_hi = parsed_hi, parsed_lo  # swap if reversed
+            yr_lo = max(min_year, parsed_lo)
+            yr_hi = min(max_year, parsed_hi)
+
+        # Apply the filter to the chart sources
+        mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src1.columns else pd.Series(False, index=chart_src1.index)
+        mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src2.columns else pd.Series(False, index=chart_src2.index)
+        chart_src1 = chart_src1.loc[mask1].copy()
+        chart_src2 = chart_src2.loc[mask2].copy()
+
+        if chart_src1.empty or chart_src2.empty:
+            st.warning("No data remains after applying the season filter.")
+            return
+
+
     # --- Stat dropdown (hide internals)
     shared_stats = _pick_shared_stats_for_dropdown(chart_src1, chart_src2)
     if not shared_stats:
