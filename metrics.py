@@ -3,15 +3,59 @@ import numpy as np
 import pandas as pd
 from fetch import get_team_totals_many
 
+# ---------------------------
+# Numeric helpers / formatting
+# ---------------------------
+def _to_num(x, nd=None):
+    try:
+        v = pd.to_numeric(x)
+        return float(v)
+    except Exception:
+        return nd
+
+def _fmt_num(x, ndashes=False, digits=1):
+    x = _to_num(x)
+    if x is None or pd.isna(x):
+        return "—" if ndashes else ""
+    return f"{round(x, digits):.{digits}f}"
+
+def _fmt_pct(x, ndashes=False, digits=2, already_pct=True):
+    """Format percentage-like values.
+    If already_pct=True, we assume x is 0–100; otherwise we scale by 100 first.
+    """
+    x = _to_num(x)
+    if x is None or pd.isna(x):
+        return "—" if ndashes else ""
+    val = x if already_pct else (x * 100.0)
+    return f"{round(val, digits):.{digits}f}%"
+
+def _safe_div(num, den):
+    num = _to_num(num, 0.0)
+    den = _to_num(den, 0.0)
+    return (num / den) if den and den != 0 else np.nan
+
+def _ensure_season_start(df: pd.DataFrame) -> pd.DataFrame:
+    if df is not None and not df.empty and "SEASON_ID" in df.columns:
+        if "SEASON_START" not in df.columns:
+            df = df.copy()
+            df["SEASON_START"] = df["SEASON_ID"].astype(str).str[:4].astype(int)
+    return df
+
+
+# ---------------------------
+# Advanced metrics
+# ---------------------------
 def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
     if player_df_totals is None or player_df_totals.empty:
         return player_df_totals
     out = player_df_totals.copy()
 
+    # Shooting splits (percent form 0–100)
     if 'FG_PCT' in out.columns:  out['FG%']  = out['FG_PCT']*100
     if 'FG3_PCT' in out.columns: out['3P%'] = out['FG3_PCT']*100
     if 'FT_PCT' in out.columns:  out['FT%']  = out['FT_PCT']*100
 
+    # TS / eFG / shots profile
     denom_ts = (out.get('FGA',0) + 0.44*out.get('FTA',0))
     out['TS%']  = np.where(denom_ts>0, out.get('PTS',0)/(2*denom_ts)*100, np.nan)
     out['EFG%'] = np.where(out.get('FGA',0)>0, (out.get('FGM',0)+0.5*out.get('FG3M',0))/out.get('FGA',0)*100, np.nan)
@@ -20,11 +64,13 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
     out['FTr']  = np.where(out.get('FGA',0)>0, out.get('FTA',0)/out.get('FGA',0), np.nan)
     out['AST/TO'] = np.where(out.get('TOV',0)>0, out.get('AST',0)/out.get('TOV',0), np.nan)
 
+    # Per-36 suite
     mins = out.get('MIN',0)
     def per36(col): return np.where(mins>0, out.get(col,0)/mins*36, np.nan)
     for stat in ['PTS','REB','AST','STL','BLK','TOV','FGM','FGA','FG3M','OREB','DREB']:
         out[f'{stat}/36'] = per36(stat)
 
+    # Team context merge (for rate stats)
     seasons_needed = out['SEASON_ID'].dropna().unique().tolist()
     team_totals = get_team_totals_many(seasons_needed)
     out = out.merge(team_totals.add_prefix('TEAM_'),
@@ -32,6 +78,7 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
                     right_on=['TEAM_SEASON_ID','TEAM_TEAM_ID'],
                     how='left')
 
+    # Team and opponent context
     tMIN = out.get('TEAM_MIN',0).astype(float)
     tFGA = out.get('TEAM_FGA',0).astype(float)
     tFTA = out.get('TEAM_FTA',0).astype(float)
@@ -45,13 +92,16 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
     oDREB= out.get('TEAM_OPP_DREB',0).astype(float)
     mp   = out.get('MIN',0).astype(float)
 
+    # Usage (true)
     denom_usg = (tFGA + 0.44*tFTA + tTOV)
     num_usg   = (out.get('FGA',0) + 0.44*out.get('FTA',0) + out.get('TOV',0)) * np.where(tMIN>0, tMIN/5.0, 0)
     out['USG% (true)'] = np.where((denom_usg>0) & (mp>0), 100.0 * num_usg / (mp*denom_usg), np.nan)
 
+    # AST%
     denom_ast = (np.where(tMIN>0, mp/tMIN, 0) * tFGM) - out.get('FGM',0)
     out['AST%'] = np.where(denom_ast != 0, 100.0 * out.get('AST',0)/denom_ast, np.nan)
 
+    # Rebound % (OREB/DRB/TRB)
     denom_orb = tOREB + np.where(oDREB>0, oDREB, 0.0)
     denom_drb = tDREB + np.where(oOREB>0, oOREB, 0.0)
     denom_trb = tTRB  + np.where(oTRB >0, oTRB,  0.0)
@@ -61,12 +111,18 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
     out['DRB%'] = np.where(denom_drb>0, 100.0 * out.get('DREB',0)*scale / denom_drb, np.nan)
     out['TRB%'] = np.where(denom_trb>0, 100.0 * out.get('REB',0) *scale / denom_trb, np.nan)
 
+    # Cleanup
     out = out.drop(columns=[c for c in ['FG_PCT','FG3_PCT','FT_PCT','TEAM_SEASON_ID','TEAM_TEAM_ID'] if c in out.columns])
     float_cols = out.select_dtypes(include=['float','float64','float32']).columns
     out[float_cols] = out[float_cols].round(2)
     out = out[[c for c in out.columns if not c.startswith("TEAM_")]]
+    out = _ensure_season_start(out)
     return out
 
+
+# ---------------------------
+# Per-game merge
+# ---------------------------
 def add_per_game_columns(adv_df: pd.DataFrame, per_game_df: pd.DataFrame) -> pd.DataFrame:
     """
     Left-merge per-game columns (PPG, RPG, APG, TPG, SPG, BPG, MPG, GP) into the advanced table.
@@ -110,30 +166,176 @@ def add_per_game_columns(adv_df: pd.DataFrame, per_game_df: pd.DataFrame) -> pd.
     if 'GP' in merged.columns:
         merged['GP'] = pd.to_numeric(merged['GP'], errors='coerce').fillna(0).astype(int)
 
+    merged = _ensure_season_start(merged)
     return merged
 
 
-def generate_player_summary(player_name: str, stats_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
-    if stats_df is None or stats_df.empty:
+# ---------------------------
+# AI summary (robust)
+# ---------------------------
+def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
+    """
+    Build a rich, season-by-season summary for the AI.
+
+    EXPECTS per_game_df from nba_api with per_mode='PerGame' (PTS/REB/AST/MIN are per-game).
+    - We first rename PerGame columns to PPG/RPG/APG/MPG/etc.
+    - We only compute per-game from totals if those renamed fields are missing.
+    - We left-join advanced metrics by SEASON_ID (+ team key when available), with a
+      fallback join on SEASON_ID only so we never lose seasons.
+    """
+    if per_game_df is None or per_game_df.empty:
         return f"No available stats for {player_name}."
+
+    # Start from a copy and RENAME per-game fields right away (critical to avoid dividing by GP again)
+    pg = per_game_df.copy()
+
+    rename_map = {
+        'PTS': 'PPG',
+        'REB': 'RPG',
+        'AST': 'APG',
+        'TOV': 'TPG',
+        'STL': 'SPG',
+        'BLK': 'BPG',
+        'MIN': 'MPG',  # PerGame MIN is already minutes per game
+    }
+    for src, dst in rename_map.items():
+        if src in pg.columns and dst not in pg.columns:
+            pg[dst] = pd.to_numeric(pg[src], errors='coerce')
+
+    # Ensure expected identity columns exist
+    for col in ['SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GP']:
+        if col not in pg.columns:
+            pg[col] = np.nan
+
+    # Fallback ONLY IF per-game fields are missing (handles the rare case you pass a Totals frame)
+    gp_series = pd.to_numeric(pg['GP'], errors='coerce')
+    def _fill_pg_from_totals(total_col, out_col):
+        if out_col in pg.columns and pg[out_col].notna().any():
+            return  # already have per-game values — don't divide again
+        if total_col in per_game_df.columns:
+            with np.errstate(invalid='ignore', divide='ignore'):
+                pg[out_col] = np.where((gp_series > 0) & pd.notna(per_game_df[total_col]),
+                                       pd.to_numeric(per_game_df[total_col], errors='coerce')/gp_series,
+                                       np.nan)
+
+    _fill_pg_from_totals('PTS', 'PPG')
+    _fill_pg_from_totals('REB', 'RPG')
+    _fill_pg_from_totals('AST', 'APG')
+    _fill_pg_from_totals('TOV', 'TPG')
+    _fill_pg_from_totals('STL', 'SPG')
+    _fill_pg_from_totals('BLK', 'BPG')
+    _fill_pg_from_totals('MIN', 'MPG')
+
+    # Round the per-game display fields nicely
+    for c in ['PPG','RPG','APG','SPG','BPG','TPG','MPG']:
+        if c in pg.columns:
+            pg[c] = pd.to_numeric(pg[c], errors='coerce').round(1)
+
+    # Merge advanced metrics
+    adv = adv_df.copy() if adv_df is not None else pd.DataFrame()
+    if adv is None or adv.empty:
+        merged = pg.copy()
+    else:
+        keys = ['SEASON_ID']
+        if 'TEAM_ID' in pg.columns and 'TEAM_ID' in adv.columns:
+            keys.append('TEAM_ID')
+        elif 'TEAM_ABBREVIATION' in pg.columns and 'TEAM_ABBREVIATION' in adv.columns:
+            keys.append('TEAM_ABBREVIATION')
+
+        merged = pg.merge(adv, on=keys, how='left', suffixes=('', '_adv'))
+
+        # If most advanced fields are missing due to team-key mismatch, fallback to SEASON_ID only
+        if merged.isna().all(axis=1).mean() > 0.5:
+            merged = pg.merge(adv, on=['SEASON_ID'], how='left', suffixes=('', '_adv'))
+
+    # Order by season
+    def _ensure_season_start(df):
+        if df is not None and not df.empty and "SEASON_ID" in df.columns:
+            if "SEASON_START" not in df.columns:
+                df = df.copy()
+                df["SEASON_START"] = df["SEASON_ID"].astype(str).str[:4].astype(int)
+        return df
+
+    merged = _ensure_season_start(merged)
+    if 'SEASON_START' in merged.columns:
+        merged = merged.sort_values(['SEASON_START', 'TEAM_ABBREVIATION'], kind='mergesort')
+    else:
+        merged = merged.sort_values('SEASON_ID', kind='mergesort')
+
+    # Small helpers
+    def _to_num(x):
+        try:
+            return float(pd.to_numeric(x))
+        except Exception:
+            return np.nan
+
+    def _fmt_num(x, digits=1):
+        x = _to_num(x)
+        return (f"{round(x, digits):.{digits}f}" if pd.notna(x) else "—")
+
+    def _fmt_pct(x, digits=2, already_pct=True):
+        x = _to_num(x)
+        if pd.isna(x):
+            return "—"
+        return f"{round(x if already_pct else x*100.0, digits):.{digits}f}%"
+
+    # Build lines
     lines = [f"📊 Full season-by-season stats for **{player_name}**:\n"]
-    for i in range(len(stats_df)):
-        s = stats_df.iloc[i]
-        a = adv_df.iloc[i] if (adv_df is not None and i < len(adv_df)) else {}
+    for _, s in merged.iterrows():
+        season = s.get('SEASON_ID', 'Unknown')
+        team   = s.get('TEAM_ABBREVIATION', 'UNK')
+
+        ppg = _fmt_num(s.get('PPG'), 1)
+        rpg = _fmt_num(s.get('RPG'), 1)
+        apg = _fmt_num(s.get('APG'), 1)
+        spg = _fmt_num(s.get('SPG'), 1)
+        bpg = _fmt_num(s.get('BPG'), 1)
+        tpg = _fmt_num(s.get('TPG'), 1)
+        mpg = _fmt_num(s.get('MPG'), 1)
+        gp  = s.get('GP'); gp = int(gp) if pd.notna(gp) else "—"
+
+        ts   = _fmt_pct(s.get('TS%'), 2, already_pct=True)
+        efg  = _fmt_pct(s.get('EFG%'), 2, already_pct=True)
+        pps  = _fmt_num(s.get('PPS'), 2)
+        tpar = _fmt_num(s.get('3PAr'), 2)
+        ftr  = _fmt_num(s.get('FTr'), 2)
+        usg  = _fmt_pct(s.get('USG% (true)'), 2, already_pct=True)
+        astp = _fmt_pct(s.get('AST%'), 2, already_pct=True)
+        trbp = _fmt_pct(s.get('TRB%'), 2, already_pct=True)
+        orbp = _fmt_pct(s.get('ORB%'), 2, already_pct=True)
+        drbp = _fmt_pct(s.get('DRB%'), 2, already_pct=True)
+        ast_to = _fmt_num(s.get('AST/TO'), 2)
+
+        fg   = _fmt_pct(s.get('FG%'), 2, already_pct=True)
+        tp   = _fmt_pct(s.get('3P%'), 2, already_pct=True)
+        ft   = _fmt_pct(s.get('FT%'), 2, already_pct=True)
+
+        pts36 = _fmt_num(s.get('PTS/36'), 2)
+        reb36 = _fmt_num(s.get('REB/36'), 2)
+        ast36 = _fmt_num(s.get('AST/36'), 2)
+        stl36 = _fmt_num(s.get('STL/36'), 2)
+        blk36 = _fmt_num(s.get('BLK/36'), 2)
+        tov36 = _fmt_num(s.get('TOV/36'), 2)
+
         lines += [
             "---",
-            f"### Season {s['SEASON_ID']} ({s['TEAM_ABBREVIATION']})",
-            f"- **PPG:** {s.get('PTS', np.nan):.1f}, **RPG:** {s.get('REB', np.nan):.1f}, **APG:** {s.get('AST', np.nan):.1f}",
-            f"- **SPG:** {s.get('STL', np.nan):.1f}, **BPG:** {s.get('BLK', np.nan):.1f}, **TPG:** {s.get('TOV', np.nan):.1f}",
-            f"- **Games Played:** {s.get('GP', np.nan)}, **Minutes/Game:** {s.get('MIN', np.nan):.1f}",
-            f"- **TS%:** {a.get('TS%', np.nan):.2f}%, **EFG%:** {a.get('EFG%', np.nan):.2f}%, **PPS:** {a.get('PPS', np.nan):.2f}",
-            f"- **USG% (true):** {a.get('USG% (true)', np.nan):.2f}%",
-            f"- **PTS/36:** {a.get('PTS/36', np.nan):.2f}, **REB/36:** {a.get('REB/36', np.nan):.2f}, **AST/36:** {a.get('AST/36', np.nan):.2f}",
-            f"- **AST/TO:** {a.get('AST/TO', np.nan):.2f}, **3PAr:** {a.get('3PAr', np.nan):.2f}, **FTr:** {a.get('FTr', np.nan):.2f}",
-            f"- **ORB%:** {a.get('ORB%', np.nan):.2f}%, **DRB%:** {a.get('DRB%', np.nan):.2f}%, **TRB%:** {a.get('TRB%', np.nan):.2f}%, **AST%:** {a.get('AST%', np.nan):.2f}%",
+            f"### Season {season} ({team})",
+            f"- **PPG:** {ppg}, **RPG:** {rpg}, **APG:** {apg}",
+            f"- **SPG:** {spg}, **BPG:** {bpg}, **TPG:** {tpg}",
+            f"- **Games Played:** {gp}, **Minutes/Game:** {mpg}",
+            f"- **FG% / 3P% / FT%:** {fg} / {tp} / {ft}",
+            f"- **TS%:** {ts}, **eFG%:** {efg}, **PPS:** {pps}",
+            f"- **3PAr:** {tpar}, **FTr:** {ftr}, **AST/TO:** {ast_to}",
+            f"- **USG% (true):** {usg}, **AST%:** {astp}, **TRB%:** {trbp}, **ORB%:** {orbp}, **DRB%:** {drbp}",
+            f"- **Per-36:** PTS {pts36}, REB {reb36}, AST {ast36}, STL {stl36}, BLK {blk36}, TOV {tov36}",
         ]
+
     return "\n".join(lines)
 
+
+# ---------------------------
+# Context for chips and tables
+# ---------------------------
 def compact_player_context(df: pd.DataFrame) -> dict:
     """
     Build a tiny, per-game-oriented summary for the latest season row.
@@ -142,6 +344,8 @@ def compact_player_context(df: pd.DataFrame) -> dict:
     if df is None or df.empty:
         return {}
 
+    df = _ensure_season_start(df)
+    df = df.sort_values('SEASON_START') if 'SEASON_START' in df.columns else df
     row = df.iloc[-1]
 
     def _num(val, default=np.nan):
@@ -208,6 +412,7 @@ def compact_player_context(df: pd.DataFrame) -> dict:
         "trb_pct": trb_pct,
         "mpg": _per_game("MPG", "MIN"),
     }
+
 
 _DISPLAY_PRIORITY = [
     # identity/context
