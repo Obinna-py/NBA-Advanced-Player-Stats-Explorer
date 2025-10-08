@@ -248,44 +248,20 @@ def render_compare_tab(primary_player: dict, model=None):
     years2 = set(chart_src2["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src2.columns else set()
     common_years = sorted(years1 & years2)
 
+    # --- Handle overlap cases BEFORE rendering any slider ---
     if len(common_years) == 0:
         st.warning("No overlapping seasons found between these players for charting.")
         return
 
-    min_year, max_year = min(common_years), max(common_years)
+    if len(common_years) == 1:
+        # Exactly one overlapping season — DO NOT render slider
+        y = common_years[0]
+        st.caption(f"Only one overlapping season ({y}-{str(y+1)[-2:]}). Season filter disabled.")
+        # clear any prior saved state for the slider to avoid conflicts
+        st.session_state.pop("cmp_season_range_slider", None)
+        yr_lo = yr_hi = y
 
-    with st.expander("🔧 Filter seasons to compare", expanded=False):
-        mode = st.radio(
-            "Choose how to set the season range:",
-            ["Slider", "Manual entry"],
-            horizontal=True,
-            key="cmp_season_filter_mode",
-        )
-
-        if mode == "Slider":
-            yr_lo, yr_hi = st.slider(
-                "Season start year range",
-                min_value=min_year,
-                max_value=max_year,
-                value=(min_year, max_year),
-                help="Drag to limit the seasons used in the chart (based on SEASON_START).",
-                key="cmp_season_range_slider",
-            )
-        else:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                txt_lo = st.text_input("Start season (e.g., 2016-17 or 2016)", value=str(min_year), key="cmp_season_lo_txt")
-            with col_b:
-                txt_hi = st.text_input("End season (e.g., 2021-22 or 2021)", value=str(max_year), key="cmp_season_hi_txt")
-
-            parsed_lo = _parse_season_input(txt_lo) or min_year
-            parsed_hi = _parse_season_input(txt_hi) or max_year
-            if parsed_lo > parsed_hi:
-                parsed_lo, parsed_hi = parsed_hi, parsed_lo  # swap if reversed
-            yr_lo = max(min_year, parsed_lo)
-            yr_hi = min(max_year, parsed_hi)
-
-        # Apply the filter to the chart sources
+        # Apply the single-season filter immediately
         mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src1.columns else pd.Series(False, index=chart_src1.index)
         mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src2.columns else pd.Series(False, index=chart_src2.index)
         chart_src1 = chart_src1.loc[mask1].copy()
@@ -295,6 +271,55 @@ def render_compare_tab(primary_player: dict, model=None):
             st.warning("No data remains after applying the season filter.")
             return
 
+    else:
+        # 2+ overlapping seasons — safe to render slider/manual controls
+        min_year, max_year = min(common_years), max(common_years)
+
+        with st.expander("🔧 Filter seasons to compare", expanded=False):
+            mode = st.radio(
+                "Choose how to set the season range:",
+                ["Slider", "Manual entry"],
+                horizontal=True,
+                key="cmp_season_filter_mode",
+            )
+
+            if mode == "Slider":
+                # Clamp prior saved value (if any) into current bounds to avoid edge errors
+                prior = st.session_state.get("cmp_season_range_slider", (min_year, max_year))
+                lo = max(min_year, min(prior[0], max_year))
+                hi = max(lo, min(prior[1], max_year))
+                yr_lo, yr_hi = st.slider(
+                    "Season start year range",
+                    min_value=min_year,
+                    max_value=max_year,
+                    value=(lo, hi),
+                    step=1,
+                    help="Drag to limit the seasons used in the chart (based on SEASON_START).",
+                    key="cmp_season_range_slider",
+                )
+            else:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    txt_lo = st.text_input("Start season (e.g., 2016-17 or 2016)", value=str(min_year), key="cmp_season_lo_txt")
+                with col_b:
+                    txt_hi = st.text_input("End season (e.g., 2021-22 or 2021)", value=str(max_year), key="cmp_season_hi_txt")
+
+                parsed_lo = _parse_season_input(txt_lo) or min_year
+                parsed_hi = _parse_season_input(txt_hi) or max_year
+                if parsed_lo > parsed_hi:
+                    parsed_lo, parsed_hi = parsed_hi, parsed_lo  # swap if reversed
+                yr_lo = max(min_year, parsed_lo)
+                yr_hi = min(max_year, parsed_hi)
+
+            # Apply the filter to the chart sources
+            mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src1.columns else pd.Series(False, index=chart_src1.index)
+            mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src2.columns else pd.Series(False, index=chart_src2.index)
+            chart_src1 = chart_src1.loc[mask1].copy()
+            chart_src2 = chart_src2.loc[mask2].copy()
+
+            if chart_src1.empty or chart_src2.empty:
+                st.warning("No data remains after applying the season filter.")
+                return
 
     # --- Stat dropdown (hide internals)
     shared_stats = _pick_shared_stats_for_dropdown(chart_src1, chart_src2)
@@ -302,7 +327,11 @@ def render_compare_tab(primary_player: dict, model=None):
         st.warning("No shared numeric stats available to compare.")
         return
     default_name = "PPG" if "PPG" in shared_stats else ("PTS" if "PTS" in shared_stats else shared_stats[0])
-    stat_choice = st.selectbox("📊 Choose a stat to compare:", shared_stats, index=shared_stats.index(default_name), key="cmp_stat_choice")
+    try:
+        default_idx = shared_stats.index(default_name)
+    except ValueError:
+        default_idx = 0
+    stat_choice = st.selectbox("📊 Choose a stat to compare:", shared_stats, index=default_idx, key="cmp_stat_choice")
 
     # --- Overlap & chart
     common = _build_overlap_for_chart(chart_src1, chart_src2, p1, p2, stat_choice)
