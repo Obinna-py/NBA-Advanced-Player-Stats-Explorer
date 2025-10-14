@@ -73,6 +73,14 @@ def stats_tab(player, model):
         ts_val = adv.iloc[-1]['TS%'] if not adv.empty and 'TS%' in adv.columns else np.nan
         m4.metric("TS%", f"{ts_val:.1f}%")
 
+
+    if adv is not None and not adv.empty:
+        cols = public_cols(adv)
+        st.dataframe(adv[metric_public_cols(adv)], use_container_width=True)
+        if not speed_mode:
+            st.info("Showing latest season advanced metrics. Turn on “ALL seasons” above to compute the full career (slower).")
+        
+    
     with st.expander("💡 Question Ideas for this player", expanded=False):
         choices, topic_map = presets()
         preset = st.radio("Quick presets", choices, horizontal=True, key="idea_preset")
@@ -92,12 +100,6 @@ def stats_tab(player, model):
                     if st.button(f"💭 {short}", help=idea, use_container_width=True, key=f"idea_btn_{i}_{short}"):
                         st.session_state["ai_question"] = idea
                         st.rerun()
-
-    if adv is not None and not adv.empty:
-        cols = public_cols(adv)
-        st.dataframe(adv[metric_public_cols(adv)], use_container_width=True)
-        if not speed_mode:
-            st.info("Showing latest season advanced metrics. Turn on “ALL seasons” above to compute the full career (slower).")
 
     with st.expander("🧠 Ask the AI Assistant about this player"):
         if model:
