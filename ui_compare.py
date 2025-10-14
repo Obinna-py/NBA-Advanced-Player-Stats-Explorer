@@ -190,33 +190,6 @@ def render_compare_tab(primary_player: dict, model=None):
     c1 = compact_player_context(ctx1_src) if ctx1_src is not None and not ctx1_src.empty else {}
     c2 = compact_player_context(ctx2_src) if ctx2_src is not None and not ctx2_src.empty else {}
 
-    with st.expander("💡 Comparison Question Ideas for these players", expanded=False):
-        topic_map = {
-            "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
-            "Scoring & Efficiency": "TS%, eFG%, PPS, 3PAr, FTr, PTS/36, shooting splits",
-            "Playmaking & TOs": "AST%, AST/TO, TOV trend, usage vs passing load",
-            "Rebounding & Defense": "TRB%, ORB%, DRB%, STL/36, BLK/36",
-            "Peak & Trends": "best/worst seasons, YoY changes, prime window",
-        }
-        preset = st.radio(
-            "Quick presets",
-            list(topic_map.keys()),
-            horizontal=True,
-            key="compare_idea_preset",
-        )
-        topic = st.text_input("Optional focus (refines suggestions):", value=topic_map[preset], key="compare_idea_focus")
-
-        ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None))
-        st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
-        for i in range(0, len(ideas_cmp), 2):
-            cols = st.columns(min(2, len(ideas_cmp) - i))
-            for col, idea in zip(cols, ideas_cmp[i:i+2]):
-                short = abbrev(idea, 40)
-                with col:
-                    if st.button(f"💭 {short}", help=idea, use_container_width=True, key=f"cmp_idea_btn_{i}_{short}"):
-                        st.session_state["ai_compare_question"] = idea
-                        smooth_scroll_to(make_anchor("compare_ai_anchor"))
-                        st.rerun()
 
     # --- Choose which sources to chart from
     if comp_speed_mode:
@@ -362,6 +335,34 @@ def render_compare_tab(primary_player: dict, model=None):
     with t2:
         st.markdown(f"**{p2}**")
         st.dataframe(adv2[metric_public_cols(adv2)] if not adv2.empty else adv2, use_container_width=True)
+    
+    with st.expander("💡 Comparison Question Ideas for these players", expanded=False):
+        topic_map = {
+            "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
+            "Scoring & Efficiency": "TS%, eFG%, PPS, 3PAr, FTr, PTS/36, shooting splits",
+            "Playmaking & TOs": "AST%, AST/TO, TOV trend, usage vs passing load",
+            "Rebounding & Defense": "TRB%, ORB%, DRB%, STL/36, BLK/36",
+            "Peak & Trends": "best/worst seasons, YoY changes, prime window",
+        }
+        preset = st.radio(
+            "Quick presets",
+            list(topic_map.keys()),
+            horizontal=True,
+            key="compare_idea_preset",
+        )
+        topic = st.text_input("Optional focus (refines suggestions):", value=topic_map[preset], key="compare_idea_focus")
+
+        ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None))
+        st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
+        for i in range(0, len(ideas_cmp), 2):
+            cols = st.columns(min(2, len(ideas_cmp) - i))
+            for col, idea in zip(cols, ideas_cmp[i:i+2]):
+                short = abbrev(idea, 40)
+                with col:
+                    if st.button(f"💭 {short}", help=idea, use_container_width=True, key=f"cmp_idea_btn_{i}_{short}"):
+                        st.session_state["ai_compare_question"] = idea
+                        smooth_scroll_to(make_anchor("compare_ai_anchor"))
+                        st.rerun()
 
     # --- AI compare
     anchor = make_anchor("compare_ai_anchor")
