@@ -28,7 +28,7 @@ def get_team_totals_for_season(season: str) -> pd.DataFrame:
             season=season, per_mode_detailed="Totals", measure_type_detailed_defense="Base", timeout=60
         ).get_data_frames()[0]
     df = _with_retry(_fetch, tries=4, base=1.0)
-    needed = ["TEAM_ID","TEAM_ABBREVIATION","MIN","FGA","FTA","TOV","FGM","REB","OREB","DREB","OPP_REB","OPP_OREB","OPP_DREB"]
+    needed = ["TEAM_ID","TEAM_ABBREVIATION","MIN","FGA","FTA","TOV","FGM","REB","OREB","DREB","FG3M","FG3A","FTM","PTS","OPP_REB","OPP_OREB","OPP_DREB"]
     for c in needed:
         if c not in df.columns: df[c] = 0
     df["TRB"] = df["REB"]; df["SEASON_ID"] = season

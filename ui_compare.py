@@ -17,7 +17,8 @@ from metrics import (
     generate_player_summary,
     compact_player_context,
     metric_public_cols,          # returns a filtered/ordered list of columns for display
-    order_columns_for_display,    # preferred display ordering (PPG/RPG/APG → TS% → etc.)
+    order_columns_for_display,
+    compute_league_shooting_table    # preferred display ordering (PPG/RPG/APG → TS% → etc.)
 )
 from ideas import cached_ai_compare_question_ideas
 from utils import abbrev, make_anchor, smooth_scroll_to
@@ -38,6 +39,72 @@ def _add_season_start(df: pd.DataFrame) -> pd.DataFrame:
             df = df.copy()
             df["SEASON_START"] = df["SEASON_ID"].astype(str).str[:4].astype(int)
     return df
+
+# --- ERA / AXIS HELPERS ---
+def _career_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds CAREER_YEAR = 1..N by SEASON_START order."""
+    if df is None or df.empty or "SEASON_START" not in df.columns:
+        return df
+    out = df.copy().sort_values("SEASON_START").reset_index(drop=True)
+    out["CAREER_YEAR"] = np.arange(1, len(out) + 1)
+    return out
+
+def _get_birth_year(player_id: int) -> int | None:
+    """Year-only (approx) for season-level age alignment."""
+    try:
+        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id).get_data_frames()[0]
+        bdate = str(info.loc[0, "BIRTHDATE"]).split("T")[0]
+        return int(bdate[:4])
+    except Exception:
+        return None
+
+def _add_age_column(df: pd.DataFrame, birth_year: int | None) -> pd.DataFrame:
+    """Adds AGE_APPROX = SEASON_START - birth_year."""
+    if df is None or df.empty or "SEASON_START" not in df.columns or birth_year is None:
+        return df
+    out = df.copy()
+    out["AGE_APPROX"] = out["SEASON_START"].astype(int) - int(birth_year)
+    return out
+
+def _align_for_chart(src1: pd.DataFrame, src2: pd.DataFrame, p1: str, p2: str, stat: str, mode: str) -> pd.DataFrame:
+    """
+    Returns tidy frame with x-axis depending on alignment mode:
+      - "Calendar (overlap only)" -> x = SEASON_ID (season labels)
+      - "Career year"             -> x = CAREER_YEAR (1..N)
+      - "Age"                     -> x = AGE_APPROX (years)
+    """
+    need_cols = {"SEASON_START", "SEASON_ID", stat}
+    if src1 is None or src2 is None or src1.empty or src2.empty:
+        return pd.DataFrame()
+    if not need_cols.issubset(src1.columns) or not need_cols.issubset(src2.columns):
+        return pd.DataFrame()
+
+    if mode == "Career year":
+        s1 = _career_index(src1); s2 = _career_index(src2); on = "CAREER_YEAR"
+    elif mode == "Age":
+        on = "AGE_APPROX"
+        if on not in src1.columns or on not in src2.columns:
+            return pd.DataFrame()
+        s1, s2 = src1, src2
+    else:
+        s1, s2 = src1, src2; on = "SEASON_START"
+
+    keep1 = [on, "SEASON_ID", stat]
+    keep2 = [on, "SEASON_ID", stat]
+    merged = s1[keep1].merge(s2[keep2], on=on, suffixes=(f"_{p1}", f"_{p2}"))
+    if merged.empty:
+        return merged
+
+    if mode == "Calendar (overlap only)":
+        merged["X_AXIS"] = merged[f"SEASON_ID_{p1}"]
+    else:
+        merged["X_AXIS"] = merged[on].astype(int)
+
+    return pd.DataFrame({
+        "X": merged["X_AXIS"],
+        p1: pd.to_numeric(merged[f"{stat}_{p1}"], errors="coerce"),
+        p2: pd.to_numeric(merged[f"{stat}_{p2}"], errors="coerce"),
+    })
 
 
 def _find_player_by_name(name: str):
@@ -197,108 +264,68 @@ def render_compare_tab(primary_player: dict, model=None):
     else:
         chart_src1, chart_src2 = raw1_pg.copy(), raw2_pg.copy()
 
+    # --- Choose sources for chart (already defined above) ---
     chart_src1 = _add_season_start(chart_src1)
     chart_src2 = _add_season_start(chart_src2)
 
-    # === Custom Season Filter (manual or slider) ===
+    # Alignment mode
+    align_mode = st.radio(
+        "Align seasons by",
+        ["Calendar (overlap only)", "Career year", "Age"],
+        horizontal=True,
+        key="cmp_align_mode"
+    )
 
-    def _parse_season_input(s: str | None) -> int | None:
-        """Accepts '2016-17', '2016/17', '2016', '2016-2017' and returns 2016 (SEASON_START)."""
-        if not s:
-            return None
-        s = s.strip()
-        # Take the first 4 consecutive digits as the start year
-        for i in range(len(s) - 3):
-            chunk = s[i:i+4]
-            if chunk.isdigit():
-                yr = int(chunk)
-                if 1946 <= yr <= 2100:
-                    return yr
-        return None
+    # Era-adjust toggle (stat+ vs league avg = 100)
+    era_toggle = st.checkbox("Era-adjust (stat+ vs league avg = 100)", value=False, key="era_adjust_toggle")
 
-    # Determine overlapping season-start years both players share
+    # If Age, add approximate age columns
+    if align_mode == "Age":
+        by1 = _get_birth_year(primary_player['id'])
+        by2 = _get_birth_year(other_player['id'])
+        chart_src1 = _add_age_column(chart_src1, by1)
+        chart_src2 = _add_age_column(chart_src2, by2)
+
     years1 = set(chart_src1["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src1.columns else set()
     years2 = set(chart_src2["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src2.columns else set()
     common_years = sorted(years1 & years2)
 
-    # --- Handle overlap cases BEFORE rendering any slider ---
-    if len(common_years) == 0:
-        st.warning("No overlapping seasons found between these players for charting.")
-        return
-
-    if len(common_years) == 1:
-        # Exactly one overlapping season — DO NOT render slider
-        y = common_years[0]
-        st.caption(f"Only one overlapping season ({y}-{str(y+1)[-2:]}). Season filter disabled.")
-        # clear any prior saved state for the slider to avoid conflicts
-        st.session_state.pop("cmp_season_range_slider", None)
-        yr_lo = yr_hi = y
-
-        # Apply the single-season filter immediately
-        mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src1.columns else pd.Series(False, index=chart_src1.index)
-        mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src2.columns else pd.Series(False, index=chart_src2.index)
-        chart_src1 = chart_src1.loc[mask1].copy()
-        chart_src2 = chart_src2.loc[mask2].copy()
-
-        if chart_src1.empty or chart_src2.empty:
-            st.warning("No data remains after applying the season filter.")
-            return
-
-    else:
-        # 2+ overlapping seasons — safe to render slider/manual controls
-        min_year, max_year = min(common_years), max(common_years)
-
-        with st.expander("🔧 Filter seasons to compare", expanded=False):
-            mode = st.radio(
-                "Choose how to set the season range:",
-                ["Slider", "Manual entry"],
-                horizontal=True,
-                key="cmp_season_filter_mode",
-            )
-
-            if mode == "Slider":
-                # Clamp prior saved value (if any) into current bounds to avoid edge errors
-                prior = st.session_state.get("cmp_season_range_slider", (min_year, max_year))
-                lo = max(min_year, min(prior[0], max_year))
-                hi = max(lo, min(prior[1], max_year))
+    # Calendar-only filter UI
+    if align_mode == "Calendar (overlap only)":
+        if len(common_years) == 0:
+            st.warning("No overlapping calendar seasons — try 'Career year' or 'Age' alignment.")
+        elif len(common_years) == 1:
+            y = common_years[0]
+            st.caption(f"Only one overlapping season ({y}-{str(y+1)[-2:]}). Season filter disabled.")
+            st.session_state.pop("cmp_season_range_slider", None)
+            mask1 = chart_src1["SEASON_START"].eq(y)
+            mask2 = chart_src2["SEASON_START"].eq(y)
+            chart_src1 = chart_src1.loc[mask1].copy()
+            chart_src2 = chart_src2.loc[mask2].copy()
+        else:
+            min_year, max_year = min(common_years), max(common_years)
+            with st.expander("🔧 Filter seasons to compare (calendar)", expanded=False):
                 yr_lo, yr_hi = st.slider(
                     "Season start year range",
                     min_value=min_year,
                     max_value=max_year,
-                    value=(lo, hi),
+                    value=(min_year, max_year),
                     step=1,
-                    help="Drag to limit the seasons used in the chart (based on SEASON_START).",
                     key="cmp_season_range_slider",
                 )
-            else:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    txt_lo = st.text_input("Start season (e.g., 2016-17 or 2016)", value=str(min_year), key="cmp_season_lo_txt")
-                with col_b:
-                    txt_hi = st.text_input("End season (e.g., 2021-22 or 2021)", value=str(max_year), key="cmp_season_hi_txt")
-
-                parsed_lo = _parse_season_input(txt_lo) or min_year
-                parsed_hi = _parse_season_input(txt_hi) or max_year
-                if parsed_lo > parsed_hi:
-                    parsed_lo, parsed_hi = parsed_hi, parsed_lo  # swap if reversed
-                yr_lo = max(min_year, parsed_lo)
-                yr_hi = min(max_year, parsed_hi)
-
-            # Apply the filter to the chart sources
-            mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src1.columns else pd.Series(False, index=chart_src1.index)
-            mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi) if "SEASON_START" in chart_src2.columns else pd.Series(False, index=chart_src2.index)
+            mask1 = chart_src1["SEASON_START"].between(yr_lo, yr_hi)
+            mask2 = chart_src2["SEASON_START"].between(yr_lo, yr_hi)
             chart_src1 = chart_src1.loc[mask1].copy()
             chart_src2 = chart_src2.loc[mask2].copy()
-
             if chart_src1.empty or chart_src2.empty:
                 st.warning("No data remains after applying the season filter.")
-                return
 
-    # --- Stat dropdown (hide internals)
+    # Shared stat selection
     shared_stats = _pick_shared_stats_for_dropdown(chart_src1, chart_src2)
     if not shared_stats:
         st.warning("No shared numeric stats available to compare.")
-        return
+        st.stop()
+
     default_name = "PPG" if "PPG" in shared_stats else ("PTS" if "PTS" in shared_stats else shared_stats[0])
     try:
         default_idx = shared_stats.index(default_name)
@@ -306,20 +333,50 @@ def render_compare_tab(primary_player: dict, model=None):
         default_idx = 0
     stat_choice = st.selectbox("📊 Choose a stat to compare:", shared_stats, index=default_idx, key="cmp_stat_choice")
 
-    # --- Overlap & chart
-    common = _build_overlap_for_chart(chart_src1, chart_src2, p1, p2, stat_choice)
+    # Era-adjust (stat+) for shooting percentages
+    supported_plus = {"TS%","EFG%","FG%","3P%","FT%"}
+    stat_for_align = stat_choice
+    label_suffix = ""
+    if era_toggle and stat_choice in supported_plus:
+        all_seasons = sorted(set(list(years1 | years2)))
+        season_ids = [f"{y}-{str(y+1)[-2:]}" for y in all_seasons]
+        league_tbl = compute_league_shooting_table(season_ids)
+        # Merge baseline to each player's seasons
+        chart_src1 = chart_src1.merge(
+            league_tbl[["SEASON_START", stat_choice]].rename(columns={stat_choice: "LEAGUE_BASE"}),
+            on="SEASON_START", how="left"
+        )
+        chart_src2 = chart_src2.merge(
+            league_tbl[["SEASON_START", stat_choice]].rename(columns={stat_choice: "LEAGUE_BASE"}),
+            on="SEASON_START", how="left"
+        )
+        # Compute STAT+: 100 = league average that season
+        chart_src1[f"{stat_choice}+"] = np.where(chart_src1["LEAGUE_BASE"]>0,
+            100.0*pd.to_numeric(chart_src1[stat_choice], errors="coerce")/chart_src1["LEAGUE_BASE"], np.nan)
+        chart_src2[f"{stat_choice}+"] = np.where(chart_src2["LEAGUE_BASE"]>0,
+            100.0*pd.to_numeric(chart_src2[stat_choice], errors="coerce")/chart_src2["LEAGUE_BASE"], np.nan)
+        stat_for_align = f"{stat_choice}+"
+        label_suffix = "+"
+        # Clean temp columns
+        chart_src1.drop(columns=["LEAGUE_BASE"], errors="ignore", inplace=True)
+        chart_src2.drop(columns=["LEAGUE_BASE"], errors="ignore", inplace=True)
+    elif era_toggle and stat_choice not in supported_plus:
+        st.info("Era-adjust currently supports TS%, EFG%, FG%, 3P%, FT%. Showing raw values.")
 
-    if common.empty:
-        st.warning("No overlapping seasons to compare.")
+    # Build aligned series & chart
+    aligned = _align_for_chart(chart_src1, chart_src2, p1, p2, stat_for_align, align_mode)
+    if aligned.empty:
+        if align_mode != "Calendar (overlap only)":
+            st.warning(f"No overlapping values found under '{align_mode}' alignment.")
+        else:
+            st.warning("No overlapping seasons to compare.")
     else:
-        fig_df = pd.DataFrame({
-            "Season": common[f"SEASON_ID_{p1}"],
-            p1:      pd.to_numeric(common[f"{stat_choice}_{p1}"], errors="coerce"),
-            p2:      pd.to_numeric(common[f"{stat_choice}_{p2}"], errors="coerce"),
-        })
-        fig = px.line(fig_df, x="Season", y=[p1, p2], markers=True, title=f"{stat_choice} — Overlapping Seasons")
-        fig.update_layout(xaxis_title="Season", yaxis_title=stat_choice, legend_title="Player")
+        x_label = {"Calendar (overlap only)": "Season", "Career year": "Career Year", "Age": "Age (approx)"}[align_mode]
+        title = f"{stat_choice}{label_suffix} — {align_mode}"
+        fig = px.line(aligned, x="X", y=[p1, p2], markers=True, title=title)
+        fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
         st.plotly_chart(fig, use_container_width=True)
+
 
     # --- Side-by-side advanced tables
     st.subheader("📊 Advanced Stats")
@@ -382,7 +439,7 @@ def render_compare_tab(primary_player: dict, model=None):
                 )
                 with st.spinner("Analyzing…"):
                     try:
-                        resp = model.generate_content(prompt2, generation_config={"max_output_tokens": 2048, "temperature": 0.6})
+                        resp = model.generate_content(prompt2, generation_config={"max_output_tokens": 4096, "temperature": 0.6})
                         st.markdown("### 🧠 AI Analysis")
                         st.write(resp.text if hasattr(resp, "text") else "No response.")
                     except Exception as e:

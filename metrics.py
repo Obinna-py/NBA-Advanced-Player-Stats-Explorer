@@ -450,3 +450,42 @@ def metric_public_cols(df):
     # make sure we don't drop any remaining visible columns that weren't in the priority list
     tail = [c for c in visible if c not in ordered]
     return ordered + tail
+
+# ---------------------------
+# League shooting baselines (per season)
+# ---------------------------
+def compute_league_shooting_table(seasons: list[str]) -> pd.DataFrame:
+    """
+    Compute weighted league shooting metrics for each season in `seasons`.
+    Returns columns: SEASON_ID, SEASON_START, FG%, 3P%, FT%, TS%, EFG% (all 0–100 scale).
+    """
+    import numpy as np
+    import pandas as pd
+
+    if not seasons:
+        return pd.DataFrame()
+
+    league = get_team_totals_many(seasons)
+    if league is None or league.empty:
+        return pd.DataFrame()
+
+    grp = league.groupby("SEASON_ID", as_index=False).agg({
+        "FGM": "sum", "FGA": "sum",
+        "FG3M": "sum", "FG3A": "sum",
+        "FTM": "sum", "FTA": "sum",
+        "PTS": "sum",
+    })
+    grp["SEASON_START"] = grp["SEASON_ID"].astype(str).str[:4].astype(int)
+
+    # Percentages (0–100)
+    grp["FG%"]  = np.where(grp["FGA"]>0, 100.0*grp["FGM"]/grp["FGA"], np.nan)
+    grp["3P%"]  = np.where(grp["FG3A"]>0, 100.0*grp["FG3M"]/grp["FG3A"], np.nan)
+    grp["FT%"]  = np.where(grp["FTA"]>0, 100.0*grp["FTM"]/grp["FTA"], np.nan)
+    grp["TS%"]  = np.where((grp["FGA"]+0.44*grp["FTA"])>0,
+                           100.0*grp["PTS"]/(2.0*(grp["FGA"]+0.44*grp["FTA"])),
+                           np.nan)
+    grp["EFG%"] = np.where(grp["FGA"]>0,
+                           100.0*(grp["FGM"] + 0.5*grp["FG3M"])/grp["FGA"],
+                           np.nan)
+
+    return grp[["SEASON_ID","SEASON_START","FG%","3P%","FT%","TS%","EFG%"]].copy()
