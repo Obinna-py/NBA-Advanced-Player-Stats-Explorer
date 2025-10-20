@@ -55,6 +55,21 @@ def _seed_eval_questions(player_name: str, ctx: dict) -> list[str]:
     return out[:20]
 
 def _seed_compare_questions(p1: str, p2: str, c1: dict, c2: dict) -> list[str]:
+    import numpy as np
+
+    def _as_ctx_dict(x):
+        # Make sure we always have a dict with .get(...)
+        if isinstance(x, dict):
+            return x
+        try:
+            return dict(x)
+        except Exception:
+            # string / other → empty dict (no personalization)
+            return {}
+
+    c1 = _as_ctx_dict(c1)
+    c2 = _as_ctx_dict(c2)
+
     q = [
         f"Who had the better peak season by TS%: {p1} or {p2}?",
         f"Who is the better passer (AST% and AST/TO)?",
@@ -70,16 +85,24 @@ def _seed_compare_questions(p1: str, p2: str, c1: dict, c2: dict) -> list[str]:
         f"Whose efficiency holds at higher usage?",
         f"Who is closer to their prime based on recent trends?",
     ]
-    # tiny personalizations
+
+    # tiny personalizations (only if keys exist & are numeric)
     for label, ctx in [(p1, c1), (p2, c2)]:
-        ts = ctx.get("ts", np.nan); usg = ctx.get("usg", np.nan); ppg = ctx.get("ppg", np.nan)
-        if not np.isnan(ts) and ts >= 60: q.insert(0, f"Is {label} sustaining elite TS% (≥{ts:.1f}%)?")
-        if not np.isnan(usg) and usg >= 28: q.insert(1, f"Does {label}'s usage (~{usg:.1f}%) outpace efficiency?")
-        if not np.isnan(ppg) and ppg >= 25: q.insert(2, f"Is {label}'s {ppg:.1f} PPG more efficient than the other?")
+        ts  = ctx.get("ts",  np.nan)
+        usg = ctx.get("usg", np.nan)
+        ppg = ctx.get("ppg", np.nan)
+        if not np.isnan(ts) and ts >= 60:
+            q.insert(0, f"Is {label} sustaining elite TS% (≥{ts:.1f}%)?")
+        if not np.isnan(usg) and usg >= 28:
+            q.insert(1, f"Does {label}'s usage (~{usg:.1f}%) outpace efficiency?")
+        if not np.isnan(ppg) and ppg >= 25:
+            q.insert(2, f"Is {label}'s {ppg:.1f} PPG more efficient than the other?")
+
+    # dedupe & cap
     out, seen = [], set()
     for s in q:
         k = s.lower()
-        if k in seen: 
+        if k in seen:
             continue
         seen.add(k); out.append(s)
     return out[:20]

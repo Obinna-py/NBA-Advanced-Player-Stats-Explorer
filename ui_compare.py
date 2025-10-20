@@ -5,12 +5,13 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
+import json
 
 from nba_api.stats.endpoints import commonplayerinfo
 from nba_api.stats.static import players as nba_players
 
 # --- project imports
-from fetch import get_player_career
+from fetch import get_player_career, get_head_to_head_games
 from metrics import (
     compute_full_advanced_stats,
     add_per_game_columns,
@@ -177,6 +178,39 @@ def _build_overlap_for_chart(src1: pd.DataFrame, src2: pd.DataFrame, p1: str, p2
     )
     return common
 
+def _ensure_ctx_dict(ctx_obj):
+    # ideas._seed_compare_questions expects a dict with .get(...)
+    if isinstance(ctx_obj, dict):
+        return ctx_obj
+    if ctx_obj is None:
+        return {}
+
+    # pandas objects
+    try:
+        if hasattr(ctx_obj, "to_dict"):
+            return ctx_obj.to_dict()
+    except Exception:
+        pass
+
+    # JSON string? try to parse to dict
+    if isinstance(ctx_obj, str):
+        s = ctx_obj.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"items": parsed}
+            except Exception:
+                pass
+        return {"text": ctx_obj}
+
+    # Last resort
+    try:
+        return dict(ctx_obj)
+    except Exception:
+        return {"text": str(ctx_obj)}
+
 
 # -------------------------
 # Main render function
@@ -252,10 +286,46 @@ def render_compare_tab(primary_player: dict, model=None):
     adv2 = _add_season_start(adv2)
 
     # --- Question ideas (chips)
+    # --- Question ideas (chips)
+    # --- Question ideas (chips)
     ctx1_src = adv1 if not adv1.empty else raw1_pg
     ctx2_src = adv2 if not adv2.empty else raw2_pg
-    c1 = compact_player_context(ctx1_src) if ctx1_src is not None and not ctx1_src.empty else {}
-    c2 = compact_player_context(ctx2_src) if ctx2_src is not None and not ctx2_src.empty else {}
+
+    # Safely turn the player context into dictionaries
+    def _ensure_ctx_dict(ctx_obj):
+        import json
+        if isinstance(ctx_obj, dict):
+            return ctx_obj
+        if ctx_obj is None:
+            return {}
+        if hasattr(ctx_obj, "to_dict"):
+            try:
+                return ctx_obj.to_dict()
+            except Exception:
+                pass
+        if isinstance(ctx_obj, str):
+            try:
+                parsed = json.loads(ctx_obj)
+                return parsed if isinstance(parsed, dict) else {"text": ctx_obj}
+            except Exception:
+                return {"text": ctx_obj}
+        try:
+            return dict(ctx_obj)
+        except Exception:
+            return {"text": str(ctx_obj)}
+
+    def _as_ctx_dict(x):
+        d = _ensure_ctx_dict(x)
+        return {str(k).lower(): v for k, v in d.items()}  # normalize lowercase keys
+
+    c1_raw = compact_player_context(ctx1_src) if ctx1_src is not None and not ctx1_src.empty else {}
+    c2_raw = compact_player_context(ctx2_src) if ctx2_src is not None and not ctx2_src.empty else {}
+    c1 = _as_ctx_dict(c1_raw)
+    c2 = _as_ctx_dict(c2_raw)
+
+
+
+
 
 
     # --- Choose which sources to chart from
@@ -377,6 +447,129 @@ def render_compare_tab(primary_player: dict, model=None):
         fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
         st.plotly_chart(fig, use_container_width=True)
 
+    # ---------------------------
+    # Head-to-Head (calendar-based, only when both actually played)
+    # ---------------------------
+    st.markdown("## 🤝 Head-to-Head")
+
+    # Choose season type
+    h2h_season_type = st.radio(
+        "Games to include",
+        ["Regular Season", "Playoffs"],
+        horizontal=True,
+        key="h2h_season_type"
+    )
+
+    # Determine candidate seasons (calendar overlap only — head-to-head needs real games)
+    p1_years = set(chart_src1["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src1.columns else set()
+    p2_years = set(chart_src2["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src2.columns else set()
+    h2h_years = sorted(p1_years & p2_years)
+
+    if len(h2h_years) == 0:
+        st.info("These players never shared an NBA season, so there are no head-to-head games.")
+    else:
+        if len(h2h_years) == 1:
+            yr_lo, yr_hi = h2h_years[0], h2h_years[0]
+            st.caption(f"Only one shared season: {yr_lo}-{str(yr_lo+1)[-2:]}")
+        else:
+            with st.expander("🔧 Filter head-to-head by season range (calendar)", expanded=False):
+                yr_lo, yr_hi = st.slider(
+                    "Season start year range",
+                    min_value=min(h2h_years),
+                    max_value=max(h2h_years),
+                    value=(min(h2h_years), max(h2h_years)),
+                    step=1,
+                    key="h2h_year_range",
+                )
+
+        # Build list of season IDs from the year range
+        def _yr_to_id(y: int) -> str:
+            return f"{y}-{str(y+1)[-2:]}"
+        season_ids = [_yr_to_id(y) for y in h2h_years if (y >= yr_lo and y <= yr_hi)]
+
+        # Fetch head-to-head game list
+        p1_id = primary_player["id"]
+        p2_id = other_player["id"]
+        p1_name = p1
+        p2_name = p2
+
+        with st.spinner("Loading head-to-head…"):
+            h2h = get_head_to_head_games(p1_id, p2_id, seasons=season_ids, season_type=h2h_season_type)
+
+        if h2h.empty:
+            st.info("No head-to-head games found in the chosen range / season type.")
+        else:
+            # Summary block
+            gp = len(h2h)
+            p1_wins = int(h2h["P1_WIN"].sum()) if "P1_WIN" in h2h.columns else None
+            p2_wins = gp - p1_wins if p1_wins is not None else None
+
+            def _avg(col):
+                return float(pd.to_numeric(h2h[col], errors="coerce").mean()) if col in h2h.columns else None
+
+            # Per-game averages
+            # P1 columns end with _P1; P2 columns end with _P2
+            avg_stats = ["PTS","REB","AST","STL","BLK","TOV","FGM","FGA","FG3M","FG3A","FTM","FTA","PLUS_MINUS","MIN"]
+            row = []
+            for sname in avg_stats:
+                v1 = _avg(f"{sname}_P1")
+                v2 = _avg(f"{sname}_P2")
+                row.append((sname, v1, v2))
+
+            colA, colB, colC = st.columns(3)
+            with colA:
+                st.metric("Games", gp)
+            with colB:
+                if p1_wins is not None:
+                    st.metric(f"{p1_name} W-L", f"{p1_wins}-{p2_wins}")
+            with colC:
+                if "PTS_P1" in h2h.columns and "PTS_P2" in h2h.columns:
+                    p1_pts = round(_avg("PTS_P1") or 0, 1)
+                    p2_pts = round(_avg("PTS_P2") or 0, 1)
+                    st.metric("PPG (H2H)", f"{p1_pts} vs {p2_pts}", delta=f"{(p1_pts - p2_pts):+.1f}")
+
+            # Quick bar chart of key averages
+            chart_keys = ["PTS","REB","AST","STL","BLK","TOV"]
+            plot_df = pd.DataFrame({
+                "Stat": chart_keys,
+                p1_name: [round(_avg(f"{k}_P1") or 0.0, 2) for k in chart_keys],
+                p2_name: [round(_avg(f"{k}_P2") or 0.0, 2) for k in chart_keys],
+            })
+            fig = px.bar(plot_df.melt(id_vars=["Stat"], var_name="Player", value_name="Value"),
+                        x="Stat", y="Value", color="Player", barmode="group",
+                        title=f"Head-to-Head Averages — {h2h_season_type}")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Games table (compact)
+            show_cols = []
+            base_cols = ["GAME_DATE","SEASON_ID","TEAM_ABBREVIATION_P1","TEAM_ABBREVIATION_P2","WL_P1"]
+            for c in base_cols:
+                if c in h2h.columns: show_cols.append(c)
+            for k in ["MIN","PTS","REB","AST","STL","BLK","TOV","PLUS_MINUS"]:
+                c1, c2 = f"{k}_P1", f"{k}_P2"
+                if c1 in h2h.columns and c2 in h2h.columns:
+                    show_cols.extend([c1, c2])
+
+            st.dataframe(
+                h2h[show_cols].rename(columns={
+                    "TEAM_ABBREVIATION_P1": f"Team {p1_name}",
+                    "TEAM_ABBREVIATION_P2": f"Team {p2_name}",
+                    "WL_P1": f"{p1_name} W/L",
+                    "GAME_DATE": "Date",
+                    "SEASON_ID": "Season",
+                    "MIN_P1": f"MIN {p1_name}", "MIN_P2": f"MIN {p2_name}",
+                    "PTS_P1": f"PTS {p1_name}", "PTS_P2": f"PTS {p2_name}",
+                    "REB_P1": f"REB {p1_name}", "REB_P2": f"REB {p2_name}",
+                    "AST_P1": f"AST {p1_name}", "AST_P2": f"AST {p2_name}",
+                    "STL_P1": f"STL {p1_name}", "STL_P2": f"STL {p2_name}",
+                    "BLK_P1": f"BLK {p1_name}", "BLK_P2": f"BLK {p2_name}",
+                    "TOV_P1": f"TOV {p1_name}", "TOV_P2": f"TOV {p2_name}",
+                    "PLUS_MINUS_P1": f"+/- {p1_name}", "PLUS_MINUS_P2": f"+/- {p2_name}",
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
 
     # --- Side-by-side advanced tables
     st.subheader("📊 Advanced Stats")
@@ -409,7 +602,12 @@ def render_compare_tab(primary_player: dict, model=None):
         )
         topic = st.text_input("Optional focus (refines suggestions):", value=topic_map[preset], key="compare_idea_focus")
 
-        ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None))
+        try:
+            ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None))
+        except Exception as e:
+            st.warning(f"Ideas generator hiccup: {e}")
+            ideas_cmp = []
+
         st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
         for i in range(0, len(ideas_cmp), 2):
             cols = st.columns(min(2, len(ideas_cmp) - i))
