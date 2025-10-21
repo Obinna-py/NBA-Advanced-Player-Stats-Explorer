@@ -29,6 +29,203 @@ from datetime import datetime
 # -------------------------
 # Small helpers
 # -------------------------
+def render_html_table(
+    df,
+    *,
+    rename_map=None,
+    number_cols=None,
+    percent_cols=None,
+    date_cols=None,
+    max_height_px=420,
+):
+    import pandas as pd
+    if df is None or df.empty:
+        st.info("No data to display.")
+        return
+
+    df2 = df.copy()
+    if rename_map:
+        df2.rename(columns=rename_map, inplace=True)
+
+    number_cols  = [c for c in (number_cols  or []) if c in df2.columns]
+    percent_cols = [c for c in (percent_cols or []) if c in df2.columns]
+    date_cols    = [c for c in (date_cols    or []) if c in df2.columns]
+
+    # format
+    for c in date_cols:
+        try:
+            df2[c] = pd.to_datetime(df2[c], errors="coerce").dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    for c in number_cols:
+        df2[c] = pd.to_numeric(df2[c], errors="coerce").round(1)
+    for c in percent_cols:
+        df2[c] = pd.to_numeric(df2[c], errors="coerce").round(2)
+
+    # build HTML with pandas Styler (then inject our own CSS)
+    
+    fmt = {}
+
+    # Explicit lists win
+    for c in (number_cols or []):
+        fmt[c] = "{:.1f}"
+    for c in (percent_cols or []):
+        fmt[c] = "{:.2f}%"
+
+    # Auto-apply to any other numeric columns not covered above
+    auto_numeric = [c for c in df2.select_dtypes(include="number").columns if c not in fmt]
+    for c in auto_numeric:
+        fmt[c] = "{:.1f}"
+
+    # Build HTML with pandas Styler
+    styler = (
+        df2.style
+        .hide(axis="index")
+        .format(fmt, na_rep="—")  # <- critical: formatting happens here
+        .set_table_attributes('class="nice-table"')
+    )
+
+    html = styler.to_html()
+
+
+
+    st.markdown(f"""
+<style>
+.nice-table {{
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 0.92rem;
+}}
+.nice-table thead th {{
+  background: rgba(255,255,255,0.06);
+  text-align: left;
+  font-weight: 600;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}}
+.nice-table tbody td {{
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}}
+.nice-table tbody tr:nth-child(even) td {{ background: rgba(255,255,255,0.03); }}
+.nice-table tbody tr:hover td {{ background: rgba(255,255,255,0.06); }}
+.nice-table-wrapper {{
+  max-height: {max_height_px}px;
+  overflow: auto;
+  border-radius: 12px;
+}}
+/* right-align obvious numeric columns */
+.nice-table td:has(.num), .nice-table th:has(.num) {{ text-align: right; }}
+</style>
+<div class="nice-table-wrapper">
+{html}
+</div>
+""", unsafe_allow_html=True)
+
+
+
+
+# light CSS polish (rounded corners, zebra stripes, compact font)
+st.markdown("""
+<style>
+/* round corners & subtle border */
+[data-testid="stDataFrame"] div[role="grid"] {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+/* header tweaks */
+[data-testid="stDataFrame"] thead tr th {
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+/* zebra rows */
+[data-testid="stDataFrame"] tbody tr:nth-child(even) {
+  background-color: rgba(255,255,255,0.03);
+}
+/* slightly smaller cell font for density */
+[data-testid="stDataFrame"] div[role="gridcell"] {
+  font-size: 0.92rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- make the stats table human-friendly -------------------------------------
+def _make_readable_stats_table(df: pd.DataFrame):
+    """
+    Take the wide advanced/per-game dataframe and return:
+      - a cleaned dataframe with readable column names
+      - lists of number_cols and percent_cols for render_html_table()
+    """
+    if df is None or df.empty:
+        return df, [], []
+
+    # 1) Start from your public/order helper
+    cols = [c for c in metric_public_cols(df)]
+
+    # 2) Remove backend/noisy columns (suffix merges, ids, etc.)
+    drop_if_suffix = ("_x", "_y")
+    cols = [
+        c for c in cols
+        if not c.endswith(drop_if_suffix) and c not in {
+            "PLAYER_AGE", "CFID", "CFPARAMS"
+        }
+    ]
+    nice = df[cols].copy()
+
+    # 3) Rename to readable labels
+    rename = {
+        "SEASON_ID": "Season",
+        "TEAM_ABBREVIATION": "Team",
+
+        # per-game (more explicit)
+        "MPG": "MIN/G",
+        "PPG": "PTS/G",
+        "RPG": "REB/G",
+        "APG": "AST/G",
+        "SPG": "STL/G",
+        "BPG": "BLK/G",
+        "TPG": "TOV/G",
+
+        # rates/efficiency
+        "USG% (true)": "USG%",
+        "EFG%": "eFG%",
+        "TS%": "TS%",
+        "PPS": "Pts/Shot",
+        "3PAr": "3PA Rate",
+        "FTr": "FT Rate",
+
+        # attempts per game you added
+        "3PA/G": "3PA/G",
+        "2PA/G": "2PA/G",
+    }
+    nice.rename(columns=rename, inplace=True)
+
+    # 4) Preferred order (only keep those that actually exist)
+    preferred = [
+        "Season", "Team",
+        "MIN/G", "PTS/G", "REB/G", "AST/G", "STL/G", "BLK/G", "TOV/G",
+        "3PA/G", "2PA/G",
+        "FG%", "3P%", "FT%", "TS%", "eFG%",
+        "Pts/Shot", "3PA Rate", "FT Rate",
+        "USG%", "AST%", "TRB%", "ORB%", "DRB%", "AST/TO",
+        "PTS/36", "REB/36", "AST/36", "STL/36", "BLK/36", "TOV/36",
+        "FGM/36", "FGA/36", "FG3M/36", "OREB/36", "DREB/36",
+    ]
+    ordered = [c for c in preferred if c in nice.columns] + [c for c in nice.columns if c not in preferred]
+    nice = nice[ordered]
+
+    # 5) Tell the HTML renderer how to format things
+    percent_cols = [c for c in ["FG%", "3P%", "FT%", "TS%", "eFG%", "USG%", "AST%", "TRB%", "ORB%", "DRB%"] if c in nice.columns]
+    # Everything numeric that isn’t a percent → one decimal
+    number_cols = [c for c in nice.columns if c not in percent_cols and pd.api.types.is_numeric_dtype(nice[c])]
+
+    return nice, number_cols, percent_cols
+
 
 def _nzdf(df: pd.DataFrame | None) -> pd.DataFrame:
     """Return df if it's a DataFrame, else empty DataFrame."""
@@ -452,7 +649,7 @@ def render_compare_tab(primary_player: dict, model=None):
     # ---------------------------
     # Head-to-Head (calendar-based, only when both actually played)
     # ---------------------------
-    st.markdown("## 🤝 Head-to-Head")
+    st.markdown("## ⚔️ Head-to-Head")
 
     # Choose season type
     h2h_season_type = st.radio(
@@ -562,25 +759,39 @@ def render_compare_tab(primary_player: dict, model=None):
                 if c1 in h2h.columns and c2 in h2h.columns:
                     show_cols.extend([c1, c2])
 
-            st.dataframe(
-                h2h[show_cols].rename(columns={
-                    "TEAM_ABBREVIATION_P1": f"Team {p1_name}",
-                    "TEAM_ABBREVIATION_P2": f"Team {p2_name}",
-                    "WL_P1": f"{p1_name} W/L",
-                    "GAME_DATE": "Date",
-                    "SEASON_ID": "Season",
-                    "MIN_P1": f"MIN {p1_name}", "MIN_P2": f"MIN {p2_name}",
-                    "PTS_P1": f"PTS {p1_name}", "PTS_P2": f"PTS {p2_name}",
-                    "REB_P1": f"REB {p1_name}", "REB_P2": f"REB {p2_name}",
-                    "AST_P1": f"AST {p1_name}", "AST_P2": f"AST {p2_name}",
-                    "STL_P1": f"STL {p1_name}", "STL_P2": f"STL {p2_name}",
-                    "BLK_P1": f"BLK {p1_name}", "BLK_P2": f"BLK {p2_name}",
-                    "TOV_P1": f"TOV {p1_name}", "TOV_P2": f"TOV {p2_name}",
-                    "PLUS_MINUS_P1": f"+/- {p1_name}", "PLUS_MINUS_P2": f"+/- {p2_name}",
-                }),
-                use_container_width=True,
-                hide_index=True
+            display_df = h2h[show_cols].rename(columns={
+                "TEAM_ABBREVIATION_P1": f"Team {p1_name}",
+                "TEAM_ABBREVIATION_P2": f"Team {p2_name}",
+                "WL_P1": f"{p1_name} W/L",
+                "GAME_DATE": "Date",
+                "SEASON_ID": "Season",
+                "MIN_P1": f"MIN {p1_name}", "MIN_P2": f"MIN {p2_name}",
+                "PTS_P1": f"PTS {p1_name}", "PTS_P2": f"PTS {p2_name}",
+                "REB_P1": f"REB {p1_name}", "REB_P2": f"REB {p2_name}",
+                "AST_P1": f"AST {p1_name}", "AST_P2": f"AST {p2_name}",
+                "STL_P1": f"STL {p1_name}", "STL_P2": f"STL {p2_name}",
+                "BLK_P1": f"BLK {p1_name}", "BLK_P2": f"BLK {p2_name}",
+                "TOV_P1": f"TOV {p1_name}", "TOV_P2": f"TOV {p2_name}",
+                "PLUS_MINUS_P1": f"+/- {p1_name}", "PLUS_MINUS_P2": f"+/- {p2_name}",
+            })
+
+            render_html_table(
+                display_df,
+                number_cols=[
+                    f"MIN {p1_name}", f"MIN {p2_name}",
+                    f"PTS {p1_name}", f"PTS {p2_name}",
+                    f"REB {p1_name}", f"REB {p2_name}",
+                    f"AST {p1_name}", f"AST {p2_name}",
+                    f"STL {p1_name}", f"STL {p2_name}",
+                    f"BLK {p1_name}", f"BLK {p2_name}",
+                    f"TOV {p1_name}", f"TOV {p2_name}",
+                    f"+/- {p1_name}", f"+/- {p2_name}",
+                ],
+                date_cols=["Date"],
             )
+
+
+
 
 
     # --- Side-by-side advanced tables
@@ -593,11 +804,25 @@ def render_compare_tab(primary_player: dict, model=None):
     t1, t2 = st.columns(2)
     with t1:
         st.markdown(f"**{p1}**")
-        st.dataframe(adv1[metric_public_cols(adv1)] if not adv1.empty else adv1, use_container_width=True)
+        left_df = adv1[metric_public_cols(adv1)] if not adv1.empty else adv1
+        left_df, left_nums, left_pcts = _make_readable_stats_table(left_df)
+        render_html_table(
+            left_df,
+            number_cols=left_nums,
+            percent_cols=left_pcts,
+            max_height_px=420,
+        )
     with t2:
         st.markdown(f"**{p2}**")
-        st.dataframe(adv2[metric_public_cols(adv2)] if not adv2.empty else adv2, use_container_width=True)
-    
+        right_df = adv2[metric_public_cols(adv2)] if not adv2.empty else adv2
+        right_df, right_nums, right_pcts = _make_readable_stats_table(right_df)
+        render_html_table(
+            right_df,
+            number_cols=right_nums,
+            percent_cols=right_pcts,
+            max_height_px=420,
+        )
+
     with st.expander("💡 Comparison Question Ideas for these players", expanded=False):
         topic_map = {
             "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
