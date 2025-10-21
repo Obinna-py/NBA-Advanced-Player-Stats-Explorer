@@ -23,11 +23,13 @@ from metrics import (
 )
 from ideas import cached_ai_compare_question_ideas
 from utils import abbrev, make_anchor, smooth_scroll_to
+from datetime import datetime
 
 
 # -------------------------
 # Small helpers
 # -------------------------
+
 def _nzdf(df: pd.DataFrame | None) -> pd.DataFrame:
     """Return df if it's a DataFrame, else empty DataFrame."""
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
@@ -461,8 +463,11 @@ def render_compare_tab(primary_player: dict, model=None):
     )
 
     # Determine candidate seasons (calendar overlap only — head-to-head needs real games)
-    p1_years = set(chart_src1["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src1.columns else set()
-    p2_years = set(chart_src2["SEASON_START"].unique().tolist()) if "SEASON_START" in chart_src2.columns else set()
+    # Determine candidate seasons from FULL CAREERS (not the chart filters)
+    _raw1_pg_ss = _add_season_start(raw1_pg.copy()) if not raw1_pg.empty else pd.DataFrame()
+    _raw2_pg_ss = _add_season_start(raw2_pg.copy()) if not raw2_pg.empty else pd.DataFrame()
+    p1_years = set(_raw1_pg_ss["SEASON_START"].unique().tolist()) if "SEASON_START" in _raw1_pg_ss.columns else set()
+    p2_years = set(_raw2_pg_ss["SEASON_START"].unique().tolist()) if "SEASON_START" in _raw2_pg_ss.columns else set()
     h2h_years = sorted(p1_years & p2_years)
 
     if len(h2h_years) == 0:
@@ -493,8 +498,15 @@ def render_compare_tab(primary_player: dict, model=None):
         p1_name = p1
         p2_name = p2
 
+        force_refetch = st.checkbox("🔁 Force re-fetch (bypass cache; slower)", value=False, key="h2h_force")
+
         with st.spinner("Loading head-to-head…"):
-            h2h = get_head_to_head_games(p1_id, p2_id, seasons=season_ids, season_type=h2h_season_type)
+            h2h = get_head_to_head_games(
+                p1_id, p2_id,
+                seasons=season_ids,
+                season_type=h2h_season_type,
+                force=int(force_refetch)  # cache key only
+            )
 
         if h2h.empty:
             st.info("No head-to-head games found in the chosen range / season type.")

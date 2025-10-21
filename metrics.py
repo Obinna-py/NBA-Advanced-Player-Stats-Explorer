@@ -126,16 +126,23 @@ def compute_full_advanced_stats(player_df_totals: pd.DataFrame) -> pd.DataFrame:
 def add_per_game_columns(adv_df: pd.DataFrame, per_game_df: pd.DataFrame) -> pd.DataFrame:
     """
     Left-merge per-game columns (PPG, RPG, APG, TPG, SPG, BPG, MPG, GP) into the advanced table.
+    Also computes 3PA/G and 2PA/G (from FG3A and FGA, which are per-game in PerGame endpoint).
     Works for both team rows and TOT rows. Uses whatever join keys exist in both frames.
     """
     if adv_df is None or adv_df.empty or per_game_df is None or per_game_df.empty:
         return adv_df
 
-    # Columns we want from per-game
-    keep_pg = ['SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'REB', 'AST', 'TOV', 'STL', 'BLK', 'MIN']
+    # --- 1) Columns we want from the PerGame frame (define BEFORE use!)
+    keep_pg = [
+        'SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GP',
+        'PTS', 'REB', 'AST', 'TOV', 'STL', 'BLK', 'MIN',
+        'FG3A', 'FGA',   # needed to derive 3PA/G and 2PA/G
+    ]
+
+    # Subset the per-game dataframe
     pg = per_game_df[[c for c in keep_pg if c in per_game_df.columns]].copy()
 
-    # Rename to per-game labels
+    # --- 2) Rename per-game fields to friendly labels
     rename_map = {
         'PTS': 'PPG',
         'REB': 'RPG',
@@ -145,21 +152,30 @@ def add_per_game_columns(adv_df: pd.DataFrame, per_game_df: pd.DataFrame) -> pd.
         'BLK': 'BPG',
         'MIN': 'MPG',
     }
-    pg = pg.rename(columns=rename_map)
+    for src, dst in rename_map.items():
+        if src in pg.columns and dst not in pg.columns:
+            pg[dst] = pd.to_numeric(pg[src], errors='coerce')
 
-    # Build join keys that exist in both dataframes (prefer SEASON_ID + TEAM_ID)
+    # --- 3) Create 3PA/G and 2PA/G (PerGame endpoint already provides per-game FGA/FG3A)
+    if 'FG3A' in pg.columns:
+        pg['3PA/G'] = pd.to_numeric(pg['FG3A'], errors='coerce')
+    if 'FGA' in pg.columns and 'FG3A' in pg.columns:
+        pg['2PA/G'] = pd.to_numeric(pg['FGA'], errors='coerce') - pd.to_numeric(pg['FG3A'], errors='coerce')
+
+    # --- 4) Build join keys that exist in both dataframes (prefer SEASON_ID + TEAM_ID)
     join_keys = []
     for k in ['SEASON_ID', 'TEAM_ID', 'TEAM_ABBREVIATION']:
         if k in adv_df.columns and k in pg.columns:
             join_keys.append(k)
+
     if 'SEASON_ID' not in join_keys:
         # Can't safely merge without season; just return adv as-is
         return adv_df
 
     merged = adv_df.merge(pg, on=join_keys, how='left')
 
-    # Round per-game columns nicely
-    for c in ['PPG', 'RPG', 'APG', 'TPG', 'SPG', 'BPG', 'MPG']:
+    # --- 5) Round per-game columns nicely
+    for c in ['PPG', 'RPG', 'APG', 'TPG', 'SPG', 'BPG', 'MPG', '3PA/G', '2PA/G']:
         if c in merged.columns:
             merged[c] = pd.to_numeric(merged[c], errors='coerce').round(1)
 
@@ -419,12 +435,14 @@ _DISPLAY_PRIORITY = [
     "SEASON_ID", "TEAM_ABBREVIATION",
     # per-game
     "GP", "MPG", "PPG", "RPG", "APG", "SPG", "BPG", "TPG",
+    "3PA/G", "2PA/G",
+    # shooting splits (if present)
+    "FG%", "3P%", "FT%",
     # core advanced (summary)
     "TS%", "EFG%", "PPS", "3PAr", "FTr", "USG% (true)", "AST%", "TRB%", "ORB%", "DRB%", "AST/TO",
     # per-36
     "PTS/36", "REB/36", "AST/36", "STL/36", "BLK/36", "TOV/36", "FGM/36", "FGA/36", "FG3M/36", "OREB/36", "DREB/36",
-    # shooting splits (if present)
-    "FG%", "3P%", "FT%",
+    
 ]
 
 # Hide these IDs & internal columns from tables

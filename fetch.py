@@ -2,7 +2,7 @@
 import time, random
 import pandas as pd
 from requests.exceptions import ReadTimeout, ConnectionError
-from nba_api.stats.endpoints import playercareerstats, leaguedashteamstats, playergamelog
+from nba_api.stats.endpoints import playercareerstats, leaguedashteamstats, playergamelog, playergamelogs
 import streamlit as st
 
 def _with_retry(fetch_fn, *, tries=4, base=1.0):
@@ -43,67 +43,88 @@ def get_team_totals_many(seasons: list[str]) -> pd.DataFrame:
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_player_game_logs_many(player_id: int, seasons: list[str], season_type: str = "Regular Season") -> pd.DataFrame:
     """
-    Fetches a player's game logs for multiple seasons (joins them).
-    seasons: list like ["2018-19","2019-20", ...]
-    season_type: "Regular Season" or "Playoffs"
+    Robustly fetch a player's game logs across multiple seasons.
+    Tries the faster playergamelogs endpoint per season; falls back to playergamelog.
+    Normalizes columns to UPPERCASE and coerces numeric types.
     """
+    import time
+    import pandas as pd
     seasons = [s for s in seasons if isinstance(s, str) and s]
     frames = []
+
     for s in seasons:
-        def _fetch():
+        # 1) Try the bulk-ish endpoint first (fewer API quirks)
+        def _fetch_bulk():
+            return playergamelogs.PlayerGameLogs(
+                season_nullable=s,
+                season_type_nullable=season_type,
+                player_id_nullable=str(player_id),
+                timeout=60
+            ).get_data_frames()[0]
+
+        # 2) Fallback single-season endpoint
+        def _fetch_simple():
             return playergamelog.PlayerGameLog(
                 player_id=player_id,
                 season=s,
                 season_type_all_star=season_type,
                 timeout=60
             ).get_data_frames()[0]
-        try:
-            df = _with_retry(_fetch, tries=4, base=1.0)
-            if not df.empty:
-                # 1) Normalize columns to ALL CAPS to avoid merge key errors (Game_ID vs GAME_ID, etc.)
-                df.columns = [str(c).upper() for c in df.columns]
 
-                # 2) Make sure we have SEASON_ID and SEASON_START
-                df["SEASON_ID"] = s
-                # Add SEASON_START as int (e.g., 2019 from "2019-20")
+        df = pd.DataFrame()
+        # Try bulk with a couple retries, then fallback
+        for attempt in range(3):
+            try:
+                df = _fetch_bulk()
+                if not df.empty:
+                    break
+            except Exception:
+                time.sleep(0.7)  # gentle backoff
+        if df is None or df.empty:
+            for attempt in range(3):
                 try:
-                    df["SEASON_START"] = int(str(s)[:4])
+                    df = _fetch_simple()
+                    if not df.empty:
+                        break
                 except Exception:
-                    pass
+                    time.sleep(0.7)
 
-                # 3) Unify common stat column names that sometimes vary
-                rename_map = {
-                    "PLUSMINUS": "PLUS_MINUS",  # nba_api sometimes uses PLUSMINUS
-                    "TEAM_ABBREVIATION": "TEAM_ABBREVIATION",  # keep as is (explicitness)
-                }
-                df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-
-                # 4) Coerce numeric stat columns
-                for c in ["PTS","REB","AST","STL","BLK","TOV","FGM","FGA","FG3M","FG3A","FTM","FTA","PLUS_MINUS","MIN"]:
-                    if c in df.columns:
-                        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-                frames.append(df)
-
-        except Exception:
-            # skip a broken season
+        if df is None or df.empty:
+            # Give the API a breather; move on
+            time.sleep(0.5)
             continue
-    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if not out.empty:
-        out["SEASON_START"] = out["SEASON_ID"].astype(str).str[:4].astype(int)
-        # standardize a few expected columns
+
+        # Normalize column names
+        df.columns = [str(c).upper() for c in df.columns]
+        df["SEASON_ID"] = s
+        try:
+            df["SEASON_START"] = int(str(s)[:4])
+        except Exception:
+            pass
+
+        # Unify and coerce numeric columns
+        if "PLUSMINUS" in df.columns and "PLUS_MINUS" not in df.columns:
+            df.rename(columns={"PLUSMINUS": "PLUS_MINUS"}, inplace=True)
+
         for c in ["PTS","REB","AST","STL","BLK","TOV","FGM","FGA","FG3M","FG3A","FTM","FTA","PLUS_MINUS","MIN"]:
-            if c in out.columns:
-                out[c] = pd.to_numeric(out[c], errors="coerce")
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        frames.append(df)
+        # light delay to avoid rate limits
+        time.sleep(0.35)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return out
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_head_to_head_games(p1_id: int, p2_id: int, seasons: list[str], season_type: str = "Regular Season") -> pd.DataFrame:
+def get_head_to_head_games(p1_id: int, p2_id: int, seasons: list[str], season_type: str = "Regular Season", force: int = 0) -> pd.DataFrame:
     """
     Returns game-level head-to-head DataFrame for the two players by intersecting GAME_ID.
-    Columns are suffixed with _P1 / _P2 for symmetry.
+    'force' is a no-op used only to bust the cache when True.
     """
+    import pandas as pd
     if not seasons:
         return pd.DataFrame()
 
@@ -113,23 +134,21 @@ def get_head_to_head_games(p1_id: int, p2_id: int, seasons: list[str], season_ty
         return pd.DataFrame()
 
     keep = ["GAME_ID","GAME_DATE","MATCHUP","WL","TEAM_ABBREVIATION","SEASON_ID","SEASON_START",
-        "MIN","PTS","REB","AST","STL","BLK","TOV","FGM","FGA","FG3M","FG3A","FTM","FTA","PLUS_MINUS"]
+            "MIN","PTS","REB","AST","STL","BLK","TOV","FGM","FGA","FG3M","FG3A","FTM","FTA","PLUS_MINUS"]
 
-    # Select only columns that exist (after we uppercased names in get_player_game_logs_many)
     g1 = g1[[c for c in keep if c in g1.columns]].copy()
     g2 = g2[[c for c in keep if c in g2.columns]].copy()
 
-    # If either side doesn't have GAME_ID after normalization, there's nothing to merge on
     if "GAME_ID" not in g1.columns or "GAME_ID" not in g2.columns:
         return pd.DataFrame()
 
     merged = g1.merge(g2, on="GAME_ID", suffixes=("_P1", "_P2"))
 
-    # keep only games where they were on opposing teams (avoid teammate overlaps)
+    # Exclude teammate overlaps
     if "TEAM_ABBREVIATION_P1" in merged.columns and "TEAM_ABBREVIATION_P2" in merged.columns:
         merged = merged[merged["TEAM_ABBREVIATION_P1"] != merged["TEAM_ABBREVIATION_P2"]].copy()
 
-    # prefer P1's dates and season fields
+    # Prefer P1's date/season fields
     if "GAME_DATE_P1" in merged.columns:
         merged.rename(columns={"GAME_DATE_P1":"GAME_DATE"}, inplace=True)
     if "SEASON_ID_P1" in merged.columns:
@@ -137,9 +156,7 @@ def get_head_to_head_games(p1_id: int, p2_id: int, seasons: list[str], season_ty
     if "SEASON_START_P1" in merged.columns:
         merged.rename(columns={"SEASON_START_P1":"SEASON_START"}, inplace=True)
 
-    # convenience flags
     if "WL_P1" in merged.columns:
         merged["P1_WIN"] = merged["WL_P1"].astype(str).str.upper().str.startswith("W")
 
     return merged.sort_values("GAME_DATE")
-
