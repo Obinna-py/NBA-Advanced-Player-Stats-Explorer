@@ -84,8 +84,7 @@ def stats_tab(player, model):
             stats_df,
             number_cols=number_cols,
             percent_cols=percent_cols,
-            date_cols=["Season"],
-            max_height_px=520,
+            max_height_px=520
         )
 
         if not speed_mode:
