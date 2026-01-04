@@ -24,7 +24,7 @@ if search_clicked:
     if not found:
         st.session_state["matches"] = []
         st.session_state["player"] = None
-        st.sidebar.error("❌ No players found. Check spelling.")
+        st.sidebar.error("❌ This player is not available in official NBA stats. Rookie data usually appears after the season begins.")
     elif len(found) == 1:
         st.session_state["player"] = found[0]
         st.session_state["matches"] = []

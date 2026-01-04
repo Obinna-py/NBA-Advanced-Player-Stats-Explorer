@@ -9,6 +9,8 @@ from fetch import get_player_career
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols
 from ideas import cached_ai_question_ideas, presets
 from utils import abbrev, public_cols
+from ui_compare import render_html_table, _make_readable_stats_table
+
 
 def _age_from_birthdate(iso_dt: str) -> int:
     birthdate = datetime.strptime(iso_dt.split('T')[0], "%Y-%m-%d")
@@ -76,11 +78,23 @@ def stats_tab(player, model):
 
     if adv is not None and not adv.empty:
         cols = public_cols(adv)
-        st.dataframe(adv[metric_public_cols(adv)], use_container_width=True)
+        stats_df, number_cols, percent_cols = _make_readable_stats_table(adv)
+
+        render_html_table(
+            stats_df,
+            number_cols=number_cols,
+            percent_cols=percent_cols,
+            date_cols=["Season"],
+            max_height_px=520,
+        )
+
         if not speed_mode:
-            st.info("Showing latest season advanced metrics. Turn on “ALL seasons” above to compute the full career (slower).")
+            st.info(
+                "Showing latest season advanced metrics. "
+                "Turn on “ALL seasons” above to compute the full career (slower)."
+            )
+            
         
-    
     with st.expander("💡 Question Ideas for this player", expanded=False):
         choices, topic_map = presets()
         preset = st.radio("Quick presets", choices, horizontal=True, key="idea_preset")
