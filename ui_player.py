@@ -505,13 +505,24 @@ def stats_tab(player, model):
     latest_src = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
     if latest_src is not None and not latest_src.empty:
         latest = latest_src.iloc[-1]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("PPG", f"{latest.get('PTS', np.nan):.1f}")
-        m2.metric("RPG", f"{latest.get('REB', np.nan):.1f}")
-        m3.metric("APG", f"{latest.get('AST', np.nan):.1f}")
-        ts_val = adv.iloc[-1]['TS%'] if not adv.empty and 'TS%' in adv.columns else np.nan
-        ts_num = pd.to_numeric(ts_val, errors="coerce")
-        m4.metric("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—")
+        headshot_url = get_nba_headshot_url(
+            player["id"],
+            player_name=player.get("full_name"),
+            player_source=player.get("source"),
+        )
+        hero_col, stats_col = st.columns([1, 3])
+        with hero_col:
+            if headshot_url:
+                st.image(headshot_url, width=170)
+            st.caption(player.get("full_name", ""))
+        with stats_col:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("PPG", f"{latest.get('PTS', np.nan):.1f}")
+            m2.metric("RPG", f"{latest.get('REB', np.nan):.1f}")
+            m3.metric("APG", f"{latest.get('AST', np.nan):.1f}")
+            ts_val = adv.iloc[-1]['TS%'] if not adv.empty and 'TS%' in adv.columns else np.nan
+            ts_num = pd.to_numeric(ts_val, errors="coerce")
+            m4.metric("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—")
 
 
     if adv is not None and not adv.empty:

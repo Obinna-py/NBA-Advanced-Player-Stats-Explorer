@@ -96,7 +96,7 @@ for key, default in [
         st.session_state[key] = default
 
 if "active_view" not in st.session_state:
-    st.session_state["active_view"] = "📋 Player Info"
+    st.session_state["active_view"] = "📊 Stats"
 
 _load_share_state_from_url()
 
@@ -146,7 +146,7 @@ with st.sidebar:
                 st.session_state["compare_players"] = []
                 st.session_state["nl_results"] = None
                 st.session_state["nl_meta"] = None
-                st.session_state["active_view"] = "📋 Player Info"
+                st.session_state["active_view"] = "📊 Stats"
                 st.rerun()
         with remove_col:
             if selected_watch != "Select a saved player" and st.button("Remove", use_container_width=True, key="watchlist_remove"):
@@ -211,7 +211,7 @@ if search_clicked:
         st.session_state["compare_players"] = []
         st.session_state["nl_results"] = None
         st.session_state["nl_meta"] = None
-        st.session_state["active_view"] = "📋 Player Info"
+        st.session_state["active_view"] = "📊 Stats"
         st.session_state["search_feedback"] = None
     else:
         st.session_state["matches"] = found
@@ -296,7 +296,7 @@ if st.session_state["matches"]:
         st.session_state["compare_players"] = []
         st.session_state["nl_results"] = None
         st.session_state["nl_meta"] = None
-        st.session_state["active_view"] = "📋 Player Info"
+        st.session_state["active_view"] = "📊 Stats"
 
 if st.session_state["player"]:
     health = st.session_state.get("nba_api_health")
