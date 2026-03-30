@@ -7,12 +7,17 @@ import plotly.express as px
 import streamlit as st
 import json
 from config import ai_generate_text
+try:
+    from streamlit_searchbox import st_searchbox
+except Exception:
+    st_searchbox = None
 
 # --- project imports
 from fetch import get_player_career, get_head_to_head_games, get_player_info, search_players, get_nba_headshot_url
 from metrics import (
     compute_full_advanced_stats,
     add_per_game_columns,
+    build_ai_phase_table,
     generate_player_summary,
     compact_player_context,
     compute_player_percentile_context,
@@ -20,9 +25,37 @@ from metrics import (
     order_columns_for_display,
     compute_league_shooting_table    # preferred display ordering (PPG/RPG/APG → TS% → etc.)
 )
-from ideas import cached_ai_compare_question_ideas
+from ideas import cached_ai_compare_question_ideas, ai_detect_career_phases
 from utils import abbrev, make_anchor, smooth_scroll_to
 from datetime import datetime
+
+
+_COMPARE_SEARCHBOX_STYLE_OVERRIDES = {
+    "searchbox": {
+        "control": {
+            "backgroundColor": "#111827",
+            "borderColor": "rgba(255,255,255,0.12)",
+            "borderRadius": 12,
+            "minHeight": 46,
+            "boxShadow": "none",
+        },
+        "input": {"color": "#f9fafb", "fontSize": 15},
+        "placeholder": {"color": "rgba(255,255,255,0.45)", "fontSize": 14},
+        "singleValue": {"color": "#f9fafb", "fontSize": 15, "fontWeight": 500},
+        "menu": {
+            "backgroundColor": "#0f172a",
+            "borderRadius": 12,
+            "overflow": "hidden",
+            "border": "1px solid rgba(255,255,255,0.08)",
+            "boxShadow": "0 18px 40px rgba(0,0,0,0.35)",
+        },
+        "menuList": {"backgroundColor": "#0f172a", "paddingTop": 6, "paddingBottom": 6},
+        "option": {"fontSize": 14, "paddingTop": 10, "paddingBottom": 10, "paddingLeft": 12, "paddingRight": 12},
+        "noOptionsMessage": {"color": "rgba(255,255,255,0.55)", "fontSize": 13},
+    },
+    "dropdown": {"fill": "#9ca3af", "width": 22, "height": 22, "rotate": True},
+    "clear": {"width": 18, "height": 18, "icon": "cross", "clearable": "always"},
+}
 
 
 # -------------------------
@@ -35,6 +68,109 @@ def _friendly_ai_error_message(error: Exception) -> str:
     if any(term in text for term in ["api key", "permission", "unauthorized", "403"]):
         return "AI is unavailable right now because the OpenAI connection or permissions need attention."
     return "AI is unavailable right now. Please try again in a moment."
+
+
+def _player_phase_state_key(player: dict) -> str:
+    return f"{player.get('source', 'nba_api')}:{player.get('id')}"
+
+
+def _weighted_average(df: pd.DataFrame, col: str, weights: pd.Series) -> float | None:
+    if col not in df.columns:
+        return None
+    values = pd.to_numeric(df[col], errors="coerce")
+    valid = values.notna() & weights.notna() & (weights > 0)
+    if not valid.any():
+        return None
+    return float(np.average(values[valid], weights=weights[valid]))
+
+
+def _summarize_stat_slice(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series(dtype="float64")
+
+    weights = pd.to_numeric(df.get("GP"), errors="coerce") if "GP" in df.columns else pd.Series(1.0, index=df.index)
+    weights = weights.fillna(1.0)
+
+    summary = {
+        "PPG": _weighted_average(df, "PPG", weights),
+        "RPG": _weighted_average(df, "RPG", weights),
+        "APG": _weighted_average(df, "APG", weights),
+        "TS%": _weighted_average(df, "TS%", weights),
+    }
+    return pd.Series(summary)
+
+
+def _validate_phase_output(phases: dict, seasons_available: list[str]) -> dict:
+    if not phases or not seasons_available:
+        return {}
+
+    available_set = set(seasons_available)
+
+    def clean_list(xs):
+        xs = [x for x in (xs or []) if isinstance(x, str)]
+        xs = [x for x in xs if x in available_set]
+        ordered = [s for s in seasons_available if s in xs]
+        out = []
+        for s in ordered:
+            if s not in out:
+                out.append(s)
+        return out
+
+    phases["early"] = clean_list(phases.get("early"))
+    phases["prime"] = clean_list(phases.get("prime"))
+    phases["late"] = clean_list(phases.get("late"))
+
+    used = set(phases["early"] + phases["prime"] + phases["late"])
+    missing = [s for s in seasons_available if s not in used]
+    if missing:
+        if phases["prime"]:
+            first_prime = seasons_available.index(phases["prime"][0])
+            last_prime = seasons_available.index(phases["prime"][-1])
+            for s in missing:
+                idx = seasons_available.index(s)
+                if idx < first_prime:
+                    phases["early"].append(s)
+                elif idx > last_prime:
+                    phases["late"].append(s)
+                else:
+                    phases["prime"].append(s)
+        phases["early"] = clean_list(phases["early"])
+        phases["prime"] = clean_list(phases["prime"])
+        phases["late"] = clean_list(phases["late"])
+
+    peak = phases.get("peak_season")
+    if peak not in available_set:
+        phases["peak_season"] = phases["prime"][-1] if phases["prime"] else seasons_available[len(seasons_available) // 2]
+
+    try:
+        phases["confidence"] = float(phases.get("confidence", 0.5))
+    except Exception:
+        phases["confidence"] = 0.5
+    phases["confidence"] = max(0.0, min(1.0, phases["confidence"]))
+    return phases
+
+
+def _slice_compare_scope(df: pd.DataFrame, scope_label: str, phases: dict | None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if scope_label == "Latest Season":
+        return df.tail(1).copy()
+    if scope_label == "Full Career":
+        return df.copy()
+    if not phases:
+        return df.copy()
+
+    phase_key_map = {
+        "Early Career": "early",
+        "Prime": "prime",
+        "Late Career": "late",
+    }
+    phase_key = phase_key_map.get(scope_label)
+    season_list = [str(s) for s in (phases.get(phase_key, []) if phase_key else []) if s]
+    if not season_list or "SEASON_ID" not in df.columns:
+        return pd.DataFrame()
+    return df[df["SEASON_ID"].astype(str).isin(season_list)].copy()
 
 
 def render_html_table(
@@ -477,6 +613,22 @@ def _pick_shared_stats_for_many(frames: list[pd.DataFrame]) -> list[str]:
     return ordered
 
 
+def _compare_player_suggestions(searchterm: str) -> list[tuple[str, dict]]:
+    if not searchterm or len(searchterm.strip()) < 2:
+        return []
+    found = search_players(searchterm.strip())[:8]
+    out = []
+    for player in found:
+        meta = []
+        if player.get("position"):
+            meta.append(player["position"])
+        if player.get("team_name"):
+            meta.append(player["team_name"])
+        meta_text = f" ({' • '.join(meta)})" if meta else ""
+        out.append((f"{player['full_name']}{meta_text}", player))
+    return out
+
+
 def _seed_multi_compare_questions(player_names: list[str]) -> list[str]:
     joined = ", ".join(player_names)
     return [
@@ -630,6 +782,10 @@ def _safe_latest_value(df: pd.DataFrame, col: str) -> float | None:
 
 
 def _latest_player_value(item: dict, col: str) -> float | None:
+    summary_df = item.get("summary_df")
+    val = _safe_latest_value(summary_df, col) if isinstance(summary_df, pd.DataFrame) else None
+    if val is not None:
+        return val
     for frame_key in ("adv", "chart_src", "raw_pg", "raw_t"):
         frame = item.get(frame_key)
         val = _safe_latest_value(frame, col) if isinstance(frame, pd.DataFrame) else None
@@ -678,8 +834,9 @@ def _metric_winner(player_frames: list[dict], col: str, label: str, *, fmt: str 
     runner_up = rows[1] if len(rows) > 1 else None
     margin = winner_value - runner_up[1] if runner_up is not None else None
     why = f"{winner_name} leads this group in {col} at {fmt.format(winner_value)}"
-    if runner_up is not None:
-        why += f", ahead of {runner_up[0]} ({fmt.format(runner_up[1])})."
+    if len(rows) > 1:
+        trailing = ", ".join([f"{name} ({fmt.format(value)})" for name, value in rows[1:]])
+        why += f", ahead of {trailing}."
     else:
         why += "."
     return {
@@ -710,8 +867,9 @@ def _defensive_winner(player_frames: list[dict]) -> dict | None:
     runner_up = rows[1] if len(rows) > 1 else None
     margin = winner_value - runner_up[1] if runner_up is not None else None
     why = f"{winner_name} grades out best from the blended defensive score"
-    if runner_up is not None:
-        why += f", beating {runner_up[0]} by {margin:.1f}."
+    if len(rows) > 1:
+        trailing = ", ".join([f"{name} ({value:.1f})" for name, value in rows[1:]])
+        why += f", ahead of {trailing}."
     else:
         why += "."
     why += " It weighs steals, blocks, total rebound %, and defensive rebound %."
@@ -763,8 +921,9 @@ def _shooting_winner(player_frames: list[dict]) -> dict | None:
         f"They're at {winner_two_pct:.1f}% on twos and {winner_pct:.1f}% from three on {winner_pa:.1f} threes per game"
     )
     why += f", with {winner_ft_pct:.1f}% from the line and {winner_ts:.1f}% TS."
-    if runner_up is not None:
-        why += f" That puts them ahead of {runner_up[0]} in the full shooting profile."
+    if len(rows) > 1:
+        trailing = ", ".join([f"{name} ({score:.1f})" for name, score, *_ in rows[1:]])
+        why += f" That puts them ahead of {trailing} in the full shooting profile."
 
     return {
         "label": "Best Shooter",
@@ -796,8 +955,9 @@ def _three_point_winner(player_frames: list[dict]) -> dict | None:
     runner_up = rows[1] if len(rows) > 1 else None
     margin = winner_score - runner_up[1] if runner_up is not None else None
     why = f"{winner_name} wins the 3-point shooting card with {winner_pct:.1f}% from deep on {winner_pa:.1f} attempts per game."
-    if runner_up is not None:
-        why += f" That beats {runner_up[0]} once volume and accuracy are weighed together."
+    if len(rows) > 1:
+        trailing = ", ".join([f"{name} ({pct:.1f}% on {pa:.1f} 3PA/G)" for name, _, pct, pa in rows[1:]])
+        why += f" That beats {trailing} once volume and accuracy are weighed together."
 
     return {
         "label": "Best 3-Point Shooter",
@@ -843,8 +1003,9 @@ def _two_point_winner(player_frames: list[dict]) -> dict | None:
         why += f" balldontlie also shows {winner_mid_share:.1f}% of their points coming from midrange twos, so this verdict leans toward real midrange involvement."
     else:
         why += " This uses 2-point efficiency and volume because no direct midrange share was available for that row."
-    if runner_up is not None:
-        why += f" It puts them ahead of {runner_up[0]} once 2-point efficiency, volume, and shot profile are combined."
+    if len(rows) > 1:
+        trailing = ", ".join([f"{name} ({pct:.1f}% on {pa:.1f} 2PA/G)" for name, _, pct, pa, *_ in rows[1:]])
+        why += f" It puts them ahead of {trailing} once 2-point efficiency, volume, and shot profile are combined."
 
     return {
         "label": label,
@@ -856,7 +1017,7 @@ def _two_point_winner(player_frames: list[dict]) -> dict | None:
     }
 
 
-def _render_comparison_verdict_cards(player_frames: list[dict]) -> None:
+def _render_comparison_verdict_cards(player_frames: list[dict], scope_label: str) -> None:
     verdicts = [
         _metric_winner(player_frames, "PPG", "Best Scorer"),
         _metric_winner(player_frames, "APG", "Best Playmaker"),
@@ -873,7 +1034,7 @@ def _render_comparison_verdict_cards(player_frames: list[dict]) -> None:
         return
 
     st.markdown("### 🏁 Comparison Verdict Cards")
-    st.caption("Quick winners from the latest loaded season view.")
+    st.caption(f"Quick winners from the selected compare view ({scope_label}), evaluated across all {len(player_frames)} selected players.")
     cols = st.columns(min(3, len(verdicts)))
     for idx, verdict in enumerate(verdicts):
         with cols[idx % len(cols)]:
@@ -886,7 +1047,12 @@ def _render_comparison_verdict_cards(player_frames: list[dict]) -> None:
                 st.caption(verdict["why"])
 
 
-def _render_percentile_compare_view(player_frames: list[dict]) -> None:
+def _render_percentile_compare_view(player_frames: list[dict], scope_label: str) -> None:
+    if scope_label != "Latest Season":
+        st.markdown("### 📈 Percentile Compare View")
+        st.info("Percentile compare is currently shown for Latest Season only, since league percentile context is season-based.")
+        return
+
     rows = []
     focus_metrics = ["PPG", "RPG", "APG", "TS%", "3P%", "USG%", "AST%", "TRB%", "BLK/G", "STL/G"]
 
@@ -937,6 +1103,8 @@ def _render_percentile_compare_view(player_frames: list[dict]) -> None:
 # -------------------------
 def render_compare_tab(primary_player: dict, model=None):
     st.subheader("Compare Players")
+    max_total_players = 5
+    max_added_players = max_total_players - 1
 
     if "compare_players" not in st.session_state:
         st.session_state["compare_players"] = []
@@ -945,29 +1113,67 @@ def render_compare_tab(primary_player: dict, model=None):
         p for p in st.session_state["compare_players"]
         if _player_key(p) != _player_key(primary_player)
     ]
-    st.session_state["compare_players"] = _dedupe_players(st.session_state["compare_players"])
+    st.session_state["compare_players"] = _dedupe_players(st.session_state["compare_players"])[:max_added_players]
+    compare_pool = _dedupe_players([primary_player] + st.session_state["compare_players"])[:max_total_players]
+    compare_pool_is_full = len(compare_pool) >= max_total_players
 
-    add_name = st.text_input("Add another player's name to compare:", key="compare_add_name")
-    add_col, clear_col = st.columns(2)
-    with add_col:
-        if st.button("Add Player", use_container_width=True):
-            found = _find_player_by_name(add_name)
-            if not found:
-                st.error("No player found for that search.")
-            elif _player_key(found) == _player_key(primary_player):
-                st.info("That player is already the main player in this view.")
-            else:
-                st.session_state["compare_players"] = _dedupe_players(
-                    st.session_state["compare_players"] + [found]
-                )[:4]
-                st.rerun()
+    if st_searchbox is not None:
+        if compare_pool_is_full:
+            st.caption("Add another player's name to compare")
+            st.warning(f"You've reached the max comparison size of {max_total_players} total players. Remove a player to add someone new.")
+            st.session_state.pop("compare_player_searchbox", None)
+            st.session_state.pop("_last_compare_search_pick", None)
+        else:
+            selected_compare_player = st_searchbox(
+                _compare_player_suggestions,
+                label="Add another player's name to compare",
+                placeholder="Start typing a player name...",
+                key="compare_player_searchbox",
+                clear_on_submit=False,
+                edit_after_submit="option",
+                style_overrides=_COMPARE_SEARCHBOX_STYLE_OVERRIDES,
+            )
+            if isinstance(selected_compare_player, dict) and selected_compare_player.get("id") is not None:
+                selected_key = _player_key(selected_compare_player)
+                last_handled_key = st.session_state.get("_last_compare_search_pick")
+                if selected_key == last_handled_key:
+                    pass
+                elif selected_key == _player_key(primary_player):
+                    st.session_state["_last_compare_search_pick"] = selected_key
+                    st.info("That player is already the main player in this view.")
+                else:
+                    current_keys = {_player_key(p) for p in st.session_state["compare_players"]}
+                    st.session_state["_last_compare_search_pick"] = selected_key
+                    if selected_key not in current_keys:
+                        st.session_state["compare_players"] = _dedupe_players(
+                            st.session_state["compare_players"] + [selected_compare_player]
+                        )[:max_added_players]
+                        st.rerun()
+        clear_col = st.columns(1)[0]
+    else:
+        add_name = st.text_input("Add another player's name to compare:", key="compare_add_name")
+        add_col, clear_col = st.columns(2)
+        with add_col:
+            if st.button("Add Player", use_container_width=True):
+                found = _find_player_by_name(add_name)
+                if compare_pool_is_full:
+                    st.warning(f"You've reached the max comparison size of {max_total_players} total players. Remove a player to add someone new.")
+                elif not found:
+                    st.error("No player found for that search.")
+                elif _player_key(found) == _player_key(primary_player):
+                    st.info("That player is already the main player in this view.")
+                else:
+                    st.session_state["compare_players"] = _dedupe_players(
+                        st.session_state["compare_players"] + [found]
+                    )[:max_added_players]
+                    st.rerun()
     with clear_col:
         if st.button("Clear Comparison Pool", use_container_width=True):
             st.session_state["compare_players"] = []
             st.rerun()
 
-    compare_pool = _dedupe_players([primary_player] + st.session_state["compare_players"])[:5]
-    st.caption("Compare up to 5 players. Head-to-head stays available when exactly 2 players are selected.")
+    compare_pool = _dedupe_players([primary_player] + st.session_state["compare_players"])[:max_total_players]
+    st.caption(f"Compare up to {max_total_players} total players ({max_added_players} added plus the primary player). Head-to-head stays available when exactly 2 players are selected.")
     st.info("Share this comparison by copying the browser URL. The selected players and active compare view stay in the link.")
 
     if len(compare_pool) < 2:
@@ -1012,56 +1218,117 @@ def render_compare_tab(primary_player: dict, model=None):
             except Exception:
                 st.caption("Player bio unavailable right now")
 
-    comp_speed_mode = st.toggle(
-        "Compute advanced for ALL seasons in comparison (slower)",
-        value=False,
-        help="Off = chart from per-game (fast, multi-season). On = advanced for all seasons (slower).",
-        key="compare_speed_toggle"
-    )
-
     player_frames = []
+    phase_store = st.session_state.setdefault("career_phases_by_player", {})
     with st.spinner("Loading comparison data…"):
         for player in compare_pool:
             raw_pg = _nzdf(get_player_career(
                 player["id"], per_mode="PerGame",
                 player_name=player.get("full_name"),
                 player_source=player.get("source"),
-                all_seasons=comp_speed_mode,
+                all_seasons=True,
             ))
             raw_t = _nzdf(get_player_career(
                 player["id"], per_mode="Totals",
                 player_name=player.get("full_name"),
                 player_source=player.get("source"),
-                all_seasons=comp_speed_mode,
+                all_seasons=True,
             ))
 
-            if comp_speed_mode:
-                adv_src = raw_t
+            if not raw_t.empty and raw_t.attrs.get("provider") == "balldontlie":
+                full_adv = raw_t.copy()
             else:
-                latest = raw_t["SEASON_ID"].iloc[-1] if not raw_t.empty else None
-                adv_src = raw_t[raw_t["SEASON_ID"] == latest] if latest else raw_t
+                full_adv = compute_full_advanced_stats(raw_t) if not raw_t.empty else pd.DataFrame()
 
-            if not adv_src.empty and adv_src.attrs.get("provider") == "balldontlie":
-                adv = adv_src.copy()
-            else:
-                adv = compute_full_advanced_stats(adv_src) if not adv_src.empty else pd.DataFrame()
+            full_adv = add_per_game_columns(full_adv, raw_pg)
+            full_adv = _add_season_start(full_adv)
 
-            adv = add_per_game_columns(adv, raw_pg)
-            adv = _add_season_start(adv)
-            chart_src = adv.copy() if comp_speed_mode else _add_season_start(raw_pg.copy())
-            ctx_src = adv if not adv.empty else raw_pg
+            phase_key = _player_phase_state_key(player)
+            phases = phase_store.get(phase_key)
+            if model and not phases and full_adv is not None and not full_adv.empty:
+                phase_df = build_ai_phase_table(full_adv)
+                seasons = phase_df["Season"].dropna().astype(str).tolist() if "Season" in phase_df.columns else []
+                if seasons:
+                    try:
+                        phases = ai_detect_career_phases(
+                            player["full_name"],
+                            phase_df.to_csv(index=False),
+                            use_model=True,
+                            _model=model,
+                        )
+                        phases = _validate_phase_output(phases, seasons)
+                        phase_store[phase_key] = phases
+                    except Exception:
+                        phases = None
+
+            ctx_src = full_adv if not full_adv.empty else raw_pg
             ctx = _ensure_ctx_dict(compact_player_context(ctx_src) if ctx_src is not None and not ctx_src.empty else {})
             ctx = {str(k).lower(): v for k, v in ctx.items()}
 
             player_frames.append({
                 "player": player,
                 "name": player["full_name"],
-                "raw_pg": raw_pg,
-                "raw_t": raw_t,
-                "adv": adv,
-                "chart_src": chart_src,
+                "full_raw_pg": _add_season_start(raw_pg.copy()) if raw_pg is not None and not raw_pg.empty else pd.DataFrame(),
+                "full_raw_t": _add_season_start(raw_t.copy()) if raw_t is not None and not raw_t.empty else pd.DataFrame(),
+                "full_adv": full_adv,
+                "phases": phases,
                 "ctx": ctx,
             })
+
+    compare_view_options = ["Latest Season", "Full Career"]
+    phase_option_specs = [
+        ("Early Career", "early"),
+        ("Prime", "prime"),
+        ("Late Career", "late"),
+    ]
+    for label, phase_key in phase_option_specs:
+        if all(item.get("phases") and item["phases"].get(phase_key) for item in player_frames):
+            compare_view_options.append(label)
+
+    selected_compare_view = st.selectbox(
+        "Comparison view",
+        compare_view_options,
+        index=0,
+        key="compare_summary_view",
+    )
+    compare_view_captions = {
+        "Latest Season": "Comparing each player's latest available season.",
+        "Full Career": "Comparing full-career windows, with verdicts using games-weighted averages across each player's full body of work.",
+        "Early Career": "Comparing each player's AI-labeled early-career seasons.",
+        "Prime": "Comparing each player's AI-labeled prime seasons.",
+        "Late Career": "Comparing each player's AI-labeled late-career seasons.",
+    }
+    st.caption(compare_view_captions.get(selected_compare_view, ""))
+
+    scoped_frames = []
+    for item in player_frames:
+        scoped_raw_pg = _slice_compare_scope(item["full_raw_pg"], selected_compare_view, item.get("phases"))
+        scoped_raw_t = _slice_compare_scope(item["full_raw_t"], selected_compare_view, item.get("phases"))
+        scoped_adv = _slice_compare_scope(item["full_adv"], selected_compare_view, item.get("phases"))
+        chart_src = scoped_adv.copy() if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg.copy()
+        ctx_src = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
+        summary_source = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
+        summary_row = _summarize_stat_slice(summary_source)
+        summary_df = pd.DataFrame([summary_row]) if not summary_row.empty else pd.DataFrame()
+        scoped_frames.append({
+            **item,
+            "raw_pg": scoped_raw_pg,
+            "raw_t": scoped_raw_t,
+            "adv": scoped_adv,
+            "summary_df": summary_df,
+            "chart_src": _add_season_start(chart_src) if chart_src is not None and not chart_src.empty else pd.DataFrame(),
+            "ctx": _ensure_ctx_dict(compact_player_context(ctx_src) if ctx_src is not None and not ctx_src.empty else {}),
+        })
+    player_frames = scoped_frames
+
+    st.subheader("📊 Advanced Stats")
+    st.caption(f"Showing the selected compare view: {selected_compare_view}.")
+    tabs = st.tabs([item["name"] for item in player_frames])
+    for tab, item in zip(tabs, player_frames):
+        with tab:
+            show_df = item["adv"][metric_public_cols(item["adv"])] if not item["adv"].empty else item["adv"]
+            show_df, nums, pcts = _make_readable_stats_table(show_df)
+            render_html_table(show_df, number_cols=nums, percent_cols=pcts, max_height_px=420)
 
     align_mode = st.radio(
         "Align seasons by",
@@ -1158,8 +1425,8 @@ def render_compare_tab(primary_player: dict, model=None):
         fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
         st.plotly_chart(fig, use_container_width=True)
 
-    _render_comparison_verdict_cards(player_frames)
-    _render_percentile_compare_view(player_frames)
+    _render_comparison_verdict_cards(player_frames, selected_compare_view)
+    _render_percentile_compare_view(player_frames, selected_compare_view)
 
     if len(player_frames) == 2:
         st.markdown("## ⚔️ Head-to-Head")
@@ -1268,15 +1535,6 @@ def render_compare_tab(primary_player: dict, model=None):
                 st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Head-to-head is available when exactly 2 players are selected.")
-
-    st.subheader("📊 Advanced Stats")
-    st.caption("All seasons (slower)." if comp_speed_mode else "Latest season only (fast). Toggle above for full career.")
-    tabs = st.tabs([item["name"] for item in player_frames])
-    for tab, item in zip(tabs, player_frames):
-        with tab:
-            show_df = item["adv"][metric_public_cols(item["adv"])] if not item["adv"].empty else item["adv"]
-            show_df, nums, pcts = _make_readable_stats_table(show_df)
-            render_html_table(show_df, number_cols=nums, percent_cols=pcts, max_height_px=420)
 
     with st.expander("💡 Comparison Question Ideas for these players", expanded=False):
         topic_map = {

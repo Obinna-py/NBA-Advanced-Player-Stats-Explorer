@@ -5,3 +5,4 @@ plotly
 requests
 nba_api
 openai
+streamlit-searchbox

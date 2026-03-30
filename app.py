@@ -1,6 +1,11 @@
 # nba_app/app.py
 import streamlit as st
 from config import ensure_page_config, model
+try:
+    from streamlit_searchbox import st_searchbox
+except Exception:
+    st_searchbox = None
+
 from fetch import (
     check_nba_api_health,
     check_balldontlie_api_health,
@@ -47,6 +52,96 @@ _NL_ARCHETYPE_OPTIONS = [
     "stretch rim protector",
     "unicorn big",
 ]
+
+_SEARCHBOX_STYLE_OVERRIDES = {
+    "searchbox": {
+        "control": {
+            "backgroundColor": "#111827",
+            "borderColor": "rgba(255,255,255,0.12)",
+            "borderRadius": 12,
+            "minHeight": 46,
+            "boxShadow": "none",
+        },
+        "input": {
+            "color": "#f9fafb",
+            "fontSize": 15,
+        },
+        "placeholder": {
+            "color": "rgba(255,255,255,0.45)",
+            "fontSize": 14,
+        },
+        "singleValue": {
+            "color": "#f9fafb",
+            "fontSize": 15,
+            "fontWeight": 500,
+        },
+        "menu": {
+            "backgroundColor": "#0f172a",
+            "borderRadius": 12,
+            "overflow": "hidden",
+            "border": "1px solid rgba(255,255,255,0.08)",
+            "boxShadow": "0 18px 40px rgba(0,0,0,0.35)",
+        },
+        "menuList": {
+            "backgroundColor": "#0f172a",
+            "paddingTop": 6,
+            "paddingBottom": 6,
+        },
+        "option": {
+            "fontSize": 14,
+            "paddingTop": 10,
+            "paddingBottom": 10,
+            "paddingLeft": 12,
+            "paddingRight": 12,
+        },
+        "noOptionsMessage": {
+            "color": "rgba(255,255,255,0.55)",
+            "fontSize": 13,
+        },
+    },
+    "dropdown": {
+        "fill": "#9ca3af",
+        "width": 22,
+        "height": 22,
+        "rotate": True,
+    },
+    "clear": {
+        "width": 18,
+        "height": 18,
+        "icon": "cross",
+        "clearable": "always",
+    },
+}
+
+
+def _open_player(selected_player: dict) -> None:
+    st.session_state["player"] = selected_player
+    st.session_state["matches"] = []
+    st.session_state["compare_players"] = []
+    st.session_state["nl_results"] = None
+    st.session_state["nl_meta"] = None
+    st.session_state["active_view"] = "📊 Stats"
+    st.session_state["search_feedback"] = None
+
+
+def _player_search_suggestions(searchterm: str) -> list[tuple[str, dict]]:
+    if not searchterm or len(searchterm.strip()) < 2:
+        return []
+    try:
+        results = search_players(searchterm.strip())[:8]
+    except Exception:
+        return []
+
+    options = []
+    for player in results:
+        meta = []
+        if player.get("position"):
+            meta.append(player["position"])
+        if player.get("team_name"):
+            meta.append(player["team_name"])
+        meta_text = f" ({' • '.join(meta)})" if meta else ""
+        options.append((f"{player['full_name']}{meta_text}", player))
+    return options
 
 
 def _load_share_state_from_url() -> None:
@@ -125,8 +220,47 @@ _load_share_state_from_url()
 
 with st.sidebar:
     st.header("🔍 Search Player")
-    name = st.text_input("Enter an NBA player's name")
-    search_clicked = st.button("Search")
+    if st_searchbox is not None:
+        selected_player = st_searchbox(
+            _player_search_suggestions,
+            label="Enter an NBA player's name",
+            placeholder="Start typing a player name...",
+            key="player_searchbox",
+            clear_on_submit=False,
+            edit_after_submit="option",
+            style_overrides=_SEARCHBOX_STYLE_OVERRIDES,
+        )
+        if isinstance(selected_player, dict) and selected_player.get("id") is not None:
+            current = st.session_state.get("player")
+            if not current or player_to_share_token(current) != player_to_share_token(selected_player):
+                _open_player(selected_player)
+                st.rerun()
+        search_clicked = False
+        name = ""
+    else:
+        name = st.text_input("Enter an NBA player's name", key="player_search_name")
+        live_suggestions = []
+        if name and len(name.strip()) >= 2:
+            try:
+                live_suggestions = search_players(name.strip())[:8]
+            except Exception:
+                live_suggestions = []
+
+        if live_suggestions:
+            st.caption("Live matches")
+            for idx, player in enumerate(live_suggestions[:6]):
+                label = player["full_name"]
+                meta = []
+                if player.get("position"):
+                    meta.append(player["position"])
+                if player.get("team_name"):
+                    meta.append(player["team_name"])
+                meta_text = f" ({' • '.join(meta)})" if meta else ""
+                if st.button(f"{label}{meta_text}", key=f"live_match_{idx}", use_container_width=True):
+                    _open_player(player)
+                    st.rerun()
+
+        search_clicked = st.button("Search")
     st.divider()
     st.subheader("Natural Language Search")
     nl_preset = st.selectbox(
@@ -237,13 +371,7 @@ if search_clicked:
             ),
         }
     elif len(found) == 1:
-        st.session_state["player"] = found[0]
-        st.session_state["matches"] = []
-        st.session_state["compare_players"] = []
-        st.session_state["nl_results"] = None
-        st.session_state["nl_meta"] = None
-        st.session_state["active_view"] = "📊 Stats"
-        st.session_state["search_feedback"] = None
+        _open_player(found[0])
     else:
         st.session_state["matches"] = found
         st.session_state["player"] = None
