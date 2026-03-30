@@ -1,19 +1,19 @@
-# nba_app/config.py
 import os
 import streamlit as st
 
 try:
-    import google.generativeai as genai
+    from openai import OpenAI
 except Exception:
-    genai = None
+    OpenAI = None
 
 def ensure_page_config():
     st.set_page_config(page_title="NBA Advanced Player Stats Explorer", layout="wide")
 
 # Paste your key here if you don't want to use env vars or secrets:
 # LOCAL fallback (only used if secrets/env vars are missing)
-LOCAL_GEMINI_API_KEY = ""  # e.g., "AIza..."
+LOCAL_OPENAI_API_KEY = ""
 LOCAL_BALLDONTLIE_API_KEY = ""
+AI_MODEL_NAME = "gpt-5.4-mini"
 
 def _load_key(secret_names: list[str], env_names: list[str], local_fallback: str = ""):
     key = None
@@ -40,9 +40,9 @@ def _load_key(secret_names: list[str], env_names: list[str], local_fallback: str
     return local_fallback or None
 
 _API_KEY = _load_key(
-    ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-    ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-    LOCAL_GEMINI_API_KEY,
+    ["OPENAI_API_KEY"],
+    ["OPENAI_API_KEY"],
+    LOCAL_OPENAI_API_KEY,
 )
 BALLDONTLIE_API_KEY = _load_key(
     ["BALLDONTLIE_API_KEY"],
@@ -53,10 +53,9 @@ AI_SETUP_ERROR = None
 
 if _API_KEY:
     try:
-        if genai is None:
-            raise ImportError("google-generativeai is not installed in this environment.")
-        genai.configure(api_key=_API_KEY)
-        model = genai.GenerativeModel("models/gemini-2.5-flash")
+        if OpenAI is None:
+            raise ImportError("openai is not installed in this environment.")
+        model = OpenAI(api_key=_API_KEY)
         AI_ENABLED = True
     except Exception as e:
         # If something goes wrong configuring the SDK, disable AI gracefully
@@ -66,3 +65,31 @@ if _API_KEY:
 else:
     model = None
     AI_ENABLED = False
+
+
+def ai_generate_text(
+    client,
+    prompt: str,
+    *,
+    max_output_tokens: int = 1024,
+    temperature: float = 0.4,
+    json_mode: bool = False,
+) -> str:
+    if client is None:
+        raise ValueError("AI client is not available.")
+
+    payload = {
+        "model": AI_MODEL_NAME,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_completion_tokens": max_output_tokens,
+    }
+
+    # Temperature is supported on standard text generation models.
+    payload["temperature"] = temperature
+
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    response = client.chat.completions.create(**payload)
+    message = response.choices[0].message if response and response.choices else None
+    return (message.content or "").strip() if message else ""

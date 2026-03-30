@@ -4,4 +4,4 @@ numpy
 plotly
 requests
 nba_api
-google-generativeai
+openai

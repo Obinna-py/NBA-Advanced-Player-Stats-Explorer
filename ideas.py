@@ -6,6 +6,7 @@ import json
 import re
 import csv
 import io
+from config import ai_generate_text
 
 # ---------- simple presets exposed to UI ----------
 def presets():
@@ -124,8 +125,7 @@ def _ai_question_ideas(player_name: str, ctx: dict, model=None, topic_hint: str=
         f"Player: {player_name}\nContext: {ctx}\nFocus hint: {topic_hint or 'none'}"
     )
     try:
-        resp = model.generate_content(prompt, generation_config={"max_output_tokens": 256, "temperature": 0.4})
-        text = getattr(resp, "text", "") or ""
+        text = ai_generate_text(model, prompt, max_output_tokens=256, temperature=0.4)
         lines = [l.strip(" -•\t") for l in text.splitlines() if l.strip()]
         items = []
         for l in lines:
@@ -148,8 +148,7 @@ def _ai_compare_question_ideas(p1: str, p2: str, c1: dict, c2: dict, model=None,
         f"Focus hint: {topic_hint or 'none'}"
     )
     try:
-        resp = model.generate_content(prompt, generation_config={"max_output_tokens": 256, "temperature": 0.4})
-        text = getattr(resp, "text", "") or ""
+        text = ai_generate_text(model, prompt, max_output_tokens=256, temperature=0.4)
         lines = [l.strip(" -•\t") for l in text.splitlines() if l.strip()]
         items = []
         for l in lines:
@@ -260,7 +259,7 @@ def _fallback_career_phases_from_table(phase_table: str) -> dict:
 def _ai_detect_career_phases(player_name: str, phase_table: str, model) -> dict:
     """
     phase_table: a string version of a compact table (csv or markdown).
-    model: your Gemini model instance.
+    model: your OpenAI client instance.
     Returns dict with early/prime/late and explanations.
     """
 
@@ -298,16 +297,13 @@ Season-by-season table:
 {phase_table}
 """
 
-    resp = model.generate_content(
+    text = ai_generate_text(
+        model,
         prompt,
-        generation_config={
-            "temperature": 0.2,
-            "max_output_tokens": 1200,
-            "response_mime_type": "application/json",
-        }
+        max_output_tokens=1200,
+        temperature=0.2,
+        json_mode=True,
     )
-
-    text = resp.text if hasattr(resp, "text") else str(resp)
     data = _extract_json_object(text)
     if data is not None:
         return data

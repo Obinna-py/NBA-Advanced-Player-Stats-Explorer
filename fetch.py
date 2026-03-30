@@ -624,6 +624,12 @@ def _build_balldontlie_stats_row(player: dict, season: int, base_stats: dict, ad
         "AST/TO": adv_stats.get("ast_to"),
         "TS%": (adv_stats.get("ts_pct") * 100) if adv_stats.get("ts_pct") is not None else None,
         "EFG%": (adv_stats.get("efg_pct") * 100) if adv_stats.get("efg_pct") is not None else None,
+        "PCT_FGA_2PT": (adv_stats.get("pct_fga_2pt") * 100) if adv_stats.get("pct_fga_2pt") is not None else None,
+        "PCT_FGA_3PT": (adv_stats.get("pct_fga_3pt") * 100) if adv_stats.get("pct_fga_3pt") is not None else None,
+        "PCT_PTS_2PT": (adv_stats.get("pct_pts_2pt") * 100) if adv_stats.get("pct_pts_2pt") is not None else None,
+        "PCT_PTS_3PT": (adv_stats.get("pct_pts_3pt") * 100) if adv_stats.get("pct_pts_3pt") is not None else None,
+        "PCT_PTS_MIDRANGE_2PT": (adv_stats.get("pct_pts_midrange_2pt") * 100) if adv_stats.get("pct_pts_midrange_2pt") is not None else None,
+        "PCT_PTS_PAINT": (adv_stats.get("pct_pts_paint") * 100) if adv_stats.get("pct_pts_paint") is not None else None,
     }
 
     if per_mode == "Totals":

@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
+from config import ai_generate_text
 from logos import college_logos
 from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
@@ -86,9 +87,9 @@ _STAT_GLOSSARY = {
 def _friendly_ai_error_message(error: Exception) -> str:
     text = str(error or "").lower()
     if any(term in text for term in ["quota", "resourceexhausted", "resource exhausted", "rate limit", "429"]):
-        return "AI is temporarily unavailable because the current Gemini quota has been reached. Please try again a little later."
+        return "AI is temporarily unavailable because the current OpenAI quota or rate limit has been reached. Please try again a little later."
     if any(term in text for term in ["api key", "permission", "unauthorized", "403"]):
-        return "AI is unavailable right now because the Gemini connection or permissions need attention."
+        return "AI is unavailable right now because the OpenAI connection or permissions need attention."
     return "AI is unavailable right now. Please try again in a moment."
 
 
@@ -578,16 +579,27 @@ def stats_tab(player, model):
             st.markdown("### 🧩 Role Archetype")
             c1, c2 = st.columns([1.4, 1])
             with c1:
-                st.metric("Primary Archetype", archetype["primary"])
+                st.metric("Primary Role", archetype["primary"])
                 if archetype.get("primary_description"):
                     st.caption(archetype["primary_description"])
                 if archetype.get("secondary"):
-                    st.caption(f"Secondary archetype: {archetype['secondary']}")
+                    st.caption(f"Secondary role: {archetype['secondary']}")
                     if archetype.get("secondary_description"):
                         st.caption(archetype["secondary_description"])
+                if archetype.get("style_tags"):
+                    st.write("**Style Tags:** " + ", ".join(archetype["style_tags"]))
+                if archetype.get("impact_tags"):
+                    st.write("**Impact Tags:** " + ", ".join(archetype["impact_tags"]))
                 st.caption(f"Confidence: {archetype['confidence']:.2f}")
                 for line in archetype.get("evidence", []):
                     st.write(f"- {line}")
+                tag_descriptions = archetype.get("tag_descriptions", {})
+                if tag_descriptions:
+                    with st.expander("What these tags mean", expanded=False):
+                        for tag in archetype.get("style_tags", []) + archetype.get("impact_tags", []):
+                            desc = tag_descriptions.get(tag)
+                            if desc:
+                                st.write(f"**{tag}:** {desc}")
             with c2:
                 scores = pd.DataFrame(archetype.get("style_scores", []))
                 if not scores.empty:
@@ -711,11 +723,11 @@ def stats_tab(player, model):
                 )
                 with st.spinner("Analyzing…"):
                     try:
-                        resp = model.generate_content(prompt, generation_config={"max_output_tokens": 3072, "temperature": 0.7})
+                        text = ai_generate_text(model, prompt, max_output_tokens=3072, temperature=0.7)
                         st.markdown("### 🧠 AI Analysis")
-                        st.write(resp.text if hasattr(resp, "text") else "No response.")
+                        st.write(text or "No response.")
                     except Exception as e:
                         st.warning(_friendly_ai_error_message(e))
                         st.caption(f"Details: {type(e).__name__}")
         else:
-            st.info("Add your Gemini API key to enable AI analysis.")
+            st.info("Add your OpenAI API key to enable AI analysis.")

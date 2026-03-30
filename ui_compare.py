@@ -6,6 +6,7 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 import json
+from config import ai_generate_text
 
 # --- project imports
 from fetch import get_player_career, get_head_to_head_games, get_player_info, search_players, get_nba_headshot_url
@@ -14,6 +15,7 @@ from metrics import (
     add_per_game_columns,
     generate_player_summary,
     compact_player_context,
+    compute_player_percentile_context,
     metric_public_cols,          # returns a filtered/ordered list of columns for display
     order_columns_for_display,
     compute_league_shooting_table    # preferred display ordering (PPG/RPG/APG → TS% → etc.)
@@ -29,9 +31,9 @@ from datetime import datetime
 def _friendly_ai_error_message(error: Exception) -> str:
     text = str(error or "").lower()
     if any(term in text for term in ["quota", "resourceexhausted", "resource exhausted", "rate limit", "429"]):
-        return "AI is temporarily unavailable because the current Gemini quota has been reached. Please try again a little later."
+        return "AI is temporarily unavailable because the current OpenAI quota or rate limit has been reached. Please try again a little later."
     if any(term in text for term in ["api key", "permission", "unauthorized", "403"]):
-        return "AI is unavailable right now because the Gemini connection or permissions need attention."
+        return "AI is unavailable right now because the OpenAI connection or permissions need attention."
     return "AI is unavailable right now. Please try again in a moment."
 
 
@@ -180,7 +182,9 @@ def _make_readable_stats_table(df: pd.DataFrame):
         if not c.endswith(drop_if_suffix) and c not in {
             "PLAYER_AGE", "CFID", "CFPARAMS",
             "FG_PCT", "FG3_PCT", "FT_PCT",
-            "PTS", "REB", "AST", "STL", "BLK", "TOV", "MIN"
+            "PTS", "REB", "AST", "STL", "BLK", "TOV", "MIN",
+            "PCT_FGA_2PT", "PCT_FGA_3PT", "PCT_PTS_2PT", "PCT_PTS_3PT",
+            "PCT_PTS_MIDRANGE_2PT", "PCT_PTS_PAINT",
         }
     ]
     nice = df[cols].copy()
@@ -618,6 +622,316 @@ def _h2h_matchup_insights(h2h: pd.DataFrame, p1: str, p2: str) -> dict:
     }
 
 
+def _safe_latest_value(df: pd.DataFrame, col: str) -> float | None:
+    if df is None or df.empty or col not in df.columns:
+        return None
+    value = pd.to_numeric(df.iloc[-1].get(col), errors="coerce")
+    return None if pd.isna(value) else float(value)
+
+
+def _latest_player_value(item: dict, col: str) -> float | None:
+    for frame_key in ("adv", "chart_src", "raw_pg", "raw_t"):
+        frame = item.get(frame_key)
+        val = _safe_latest_value(frame, col) if isinstance(frame, pd.DataFrame) else None
+        if val is not None:
+            return val
+    return None
+
+
+def _derive_two_point_profile(item: dict) -> tuple[float | None, float | None]:
+    fg_pct = _latest_player_value(item, "FG%")
+    three_pct = _latest_player_value(item, "3P%")
+    three_pa = _latest_player_value(item, "3PA/G")
+    two_pa = _latest_player_value(item, "2PA/G")
+
+    if fg_pct is None or three_pct is None or three_pa is None or two_pa is None:
+        return None, two_pa
+
+    total_fga_pg = two_pa + three_pa
+    if total_fga_pg <= 0 or two_pa <= 0:
+        return None, two_pa
+
+    fgm_pg = (fg_pct / 100.0) * total_fga_pg
+    fg3m_pg = (three_pct / 100.0) * three_pa
+    twopm_pg = fgm_pg - fg3m_pg
+    two_pct = (twopm_pg / two_pa) * 100.0 if two_pa > 0 else None
+
+    if two_pct is None:
+        return None, two_pa
+
+    return max(min(two_pct, 100.0), 0.0), two_pa
+
+
+def _metric_winner(player_frames: list[dict], col: str, label: str, *, fmt: str = "{:.1f}") -> dict | None:
+    rows = []
+    for item in player_frames:
+        val = _latest_player_value(item, col)
+        if val is None:
+            continue
+        rows.append((item["name"], val))
+
+    if not rows:
+        return None
+
+    rows = sorted(rows, key=lambda x: x[1], reverse=True)
+    winner_name, winner_value = rows[0]
+    runner_up = rows[1] if len(rows) > 1 else None
+    margin = winner_value - runner_up[1] if runner_up is not None else None
+    why = f"{winner_name} leads this group in {col} at {fmt.format(winner_value)}"
+    if runner_up is not None:
+        why += f", ahead of {runner_up[0]} ({fmt.format(runner_up[1])})."
+    else:
+        why += "."
+    return {
+        "label": label,
+        "winner": winner_name,
+        "value": winner_value,
+        "display": fmt.format(winner_value),
+        "margin": margin,
+        "why": why,
+    }
+
+
+def _defensive_winner(player_frames: list[dict]) -> dict | None:
+    rows = []
+    for item in player_frames:
+        blk = _latest_player_value(item, "BLK/G") or 0.0
+        stl = _latest_player_value(item, "STL/G") or 0.0
+        trb = _latest_player_value(item, "TRB%") or 0.0
+        drb = _latest_player_value(item, "DRB%") or 0.0
+        score = (blk * 2.2) + (stl * 1.8) + (trb * 0.12) + (drb * 0.08)
+        rows.append((item["name"], score))
+
+    if not rows:
+        return None
+
+    rows = sorted(rows, key=lambda x: x[1], reverse=True)
+    winner_name, winner_value = rows[0]
+    runner_up = rows[1] if len(rows) > 1 else None
+    margin = winner_value - runner_up[1] if runner_up is not None else None
+    why = f"{winner_name} grades out best from the blended defensive score"
+    if runner_up is not None:
+        why += f", beating {runner_up[0]} by {margin:.1f}."
+    else:
+        why += "."
+    why += " It weighs steals, blocks, total rebound %, and defensive rebound %."
+    return {
+        "label": "Best Defender",
+        "winner": winner_name,
+        "value": winner_value,
+        "display": f"{winner_value:.1f}",
+        "margin": margin,
+        "why": why,
+    }
+
+
+def _shooting_winner(player_frames: list[dict]) -> dict | None:
+    rows = []
+    for item in player_frames:
+        three_pct = _latest_player_value(item, "3P%")
+        three_pa = _latest_player_value(item, "3PA/G")
+        ft_pct = _latest_player_value(item, "FT%") or 0.0
+        ts = _latest_player_value(item, "TS%") or 0.0
+        two_pct, two_pa = _derive_two_point_profile(item)
+        if three_pct is None or three_pa is None:
+            continue
+
+        if two_pct is None:
+            continue
+
+        volume_factor = min(max(three_pa, 0.0), 8.0) / 8.0
+        two_volume_factor = min(max(two_pa, 0.0), 12.0) / 12.0
+        score = (
+            (three_pct * (0.32 + 0.18 * volume_factor)) +
+            (two_pct * (0.28 + 0.17 * two_volume_factor)) +
+            (three_pa * 1.7) +
+            (two_pa * 0.7) +
+            (ft_pct * 0.18) +
+            (ts * 0.12)
+        )
+        rows.append((item["name"], score, three_pct, three_pa, two_pct, two_pa, ft_pct, ts))
+
+    if not rows:
+        return _metric_winner(player_frames, "3P%", "Best Shooter", fmt="{:.1f}%")
+
+    rows = sorted(rows, key=lambda x: x[1], reverse=True)
+    winner_name, winner_score, winner_pct, winner_pa, winner_two_pct, winner_two_pa, winner_ft_pct, winner_ts = rows[0]
+    runner_up = rows[1] if len(rows) > 1 else None
+    margin = winner_score - runner_up[1] if runner_up is not None else None
+    why = (
+        f"{winner_name} wins on an all-around shooting score built from 2P%, 2PA volume, 3P%, 3PA volume, FT%, and TS%. "
+        f"They're at {winner_two_pct:.1f}% on twos and {winner_pct:.1f}% from three on {winner_pa:.1f} threes per game"
+    )
+    why += f", with {winner_ft_pct:.1f}% from the line and {winner_ts:.1f}% TS."
+    if runner_up is not None:
+        why += f" That puts them ahead of {runner_up[0]} in the full shooting profile."
+
+    return {
+        "label": "Best Shooter",
+        "winner": winner_name,
+        "value": winner_score,
+        "display": f"{winner_two_pct:.1f}% 2P | {winner_pct:.1f}% 3P",
+        "margin": margin,
+        "why": why,
+    }
+
+
+def _three_point_winner(player_frames: list[dict]) -> dict | None:
+    rows = []
+    for item in player_frames:
+        three_pct = _latest_player_value(item, "3P%")
+        three_pa = _latest_player_value(item, "3PA/G")
+        if three_pct is None or three_pa is None:
+            continue
+
+        volume_factor = min(max(three_pa, 0.0), 9.0) / 9.0
+        score = (three_pct * (0.65 + 0.35 * volume_factor)) + (three_pa * 2.6)
+        rows.append((item["name"], score, three_pct, three_pa))
+
+    if not rows:
+        return None
+
+    rows = sorted(rows, key=lambda x: x[1], reverse=True)
+    winner_name, winner_score, winner_pct, winner_pa = rows[0]
+    runner_up = rows[1] if len(rows) > 1 else None
+    margin = winner_score - runner_up[1] if runner_up is not None else None
+    why = f"{winner_name} wins the 3-point shooting card with {winner_pct:.1f}% from deep on {winner_pa:.1f} attempts per game."
+    if runner_up is not None:
+        why += f" That beats {runner_up[0]} once volume and accuracy are weighed together."
+
+    return {
+        "label": "Best 3-Point Shooter",
+        "winner": winner_name,
+        "value": winner_score,
+        "display": f"{winner_pct:.1f}% | {winner_pa:.1f} 3PA/G",
+        "margin": margin,
+        "why": why,
+    }
+
+
+def _two_point_winner(player_frames: list[dict]) -> dict | None:
+    rows = []
+    for item in player_frames:
+        two_pct, two_pa = _derive_two_point_profile(item)
+        ts = _latest_player_value(item, "TS%") or 0.0
+        midrange_pts_share = _latest_player_value(item, "PCT_PTS_MIDRANGE_2PT") or 0.0
+        pts_2pt_share = _latest_player_value(item, "PCT_PTS_2PT") or 0.0
+        if two_pct is None or two_pa is None:
+            continue
+
+        if two_pa <= 0:
+            continue
+        score = (
+            (two_pct * (0.60 + 0.20 * min(two_pa, 12.0) / 12.0)) +
+            (two_pa * 1.2) +
+            (midrange_pts_share * 0.55) +
+            (pts_2pt_share * 0.18) +
+            (ts * 0.06)
+        )
+        rows.append((item["name"], score, two_pct, two_pa, midrange_pts_share))
+
+    if not rows:
+        return None
+
+    rows = sorted(rows, key=lambda x: x[1], reverse=True)
+    winner_name, winner_score, winner_pct, winner_pa, winner_mid_share = rows[0]
+    runner_up = rows[1] if len(rows) > 1 else None
+    margin = winner_score - runner_up[1] if runner_up is not None else None
+    label = "Best Midrange / 2-Point Shooter"
+    why = f"{winner_name} wins this card with {winner_pct:.1f}% on {winner_pa:.1f} two-point attempts per game."
+    if winner_mid_share > 0:
+        why += f" balldontlie also shows {winner_mid_share:.1f}% of their points coming from midrange twos, so this verdict leans toward real midrange involvement."
+    else:
+        why += " This uses 2-point efficiency and volume because no direct midrange share was available for that row."
+    if runner_up is not None:
+        why += f" It puts them ahead of {runner_up[0]} once 2-point efficiency, volume, and shot profile are combined."
+
+    return {
+        "label": label,
+        "winner": winner_name,
+        "value": winner_score,
+        "display": f"{winner_pct:.1f}% | {winner_pa:.1f} 2PA/G",
+        "margin": margin,
+        "why": why,
+    }
+
+
+def _render_comparison_verdict_cards(player_frames: list[dict]) -> None:
+    verdicts = [
+        _metric_winner(player_frames, "PPG", "Best Scorer"),
+        _metric_winner(player_frames, "APG", "Best Playmaker"),
+        _metric_winner(player_frames, "RPG", "Best Rebounder"),
+        _metric_winner(player_frames, "TS%", "Most Efficient", fmt="{:.1f}%"),
+        _shooting_winner(player_frames),
+        _three_point_winner(player_frames),
+        _two_point_winner(player_frames),
+        _defensive_winner(player_frames),
+        _metric_winner(player_frames, "BLK/G", "Best Rim Protector"),
+    ]
+    verdicts = [v for v in verdicts if v is not None]
+    if not verdicts:
+        return
+
+    st.markdown("### 🏁 Comparison Verdict Cards")
+    st.caption("Quick winners from the latest loaded season view.")
+    cols = st.columns(min(3, len(verdicts)))
+    for idx, verdict in enumerate(verdicts):
+        with cols[idx % len(cols)]:
+            delta = f"+{verdict['margin']:.1f}" if verdict["margin"] is not None else None
+            if delta and "%" in verdict["display"]:
+                delta += " pts"
+            st.metric(verdict["label"], verdict["winner"], delta=delta)
+            st.caption(f"{verdict['display']} in the current compare view")
+            if verdict.get("why"):
+                st.caption(verdict["why"])
+
+
+def _render_percentile_compare_view(player_frames: list[dict]) -> None:
+    rows = []
+    focus_metrics = ["PPG", "RPG", "APG", "TS%", "3P%", "USG%", "AST%", "TRB%", "BLK/G", "STL/G"]
+
+    for item in player_frames:
+        adv = item["adv"]
+        if adv is None or adv.empty or "SEASON_ID" not in adv.columns:
+            continue
+        latest_season_id = str(adv.iloc[-1].get("SEASON_ID", ""))
+        pct_df = compute_player_percentile_context(item["name"], latest_season_id, adv)
+        if pct_df is None or pct_df.empty:
+            continue
+
+        pct_df = pct_df[pct_df["Metric"].isin(focus_metrics)].copy()
+        for _, row in pct_df.iterrows():
+            pct = pd.to_numeric(row.get("Percentile"), errors="coerce")
+            if pd.isna(pct):
+                continue
+            rows.append({
+                "Player": item["name"],
+                "Metric": row["Metric"],
+                "Percentile": float(pct),
+                "Value": row.get("Value"),
+                "Rank / Field": f"{int(row['Rank'])} / {int(row['Of'])}" if pd.notna(row.get("Rank")) and pd.notna(row.get("Of")) else "—",
+            })
+
+    if not rows:
+        return
+
+    percentile_df = pd.DataFrame(rows)
+    st.markdown("### 📈 Percentile Compare View")
+    st.caption("Latest-season percentile context so the comparison is easier to read than raw stats alone.")
+
+    pivot = percentile_df.pivot(index="Metric", columns="Player", values="Percentile").reset_index()
+    player_cols = [c for c in pivot.columns if c != "Metric"]
+    render_html_table(pivot, number_cols=player_cols, max_height_px=320)
+
+    with st.expander("Percentile details", expanded=False):
+        render_html_table(
+            percentile_df[["Player", "Metric", "Value", "Percentile", "Rank / Field"]],
+            number_cols=["Value"],
+            percent_cols=["Percentile"],
+            max_height_px=360,
+        )
+
+
 # -------------------------
 # Main render function
 # -------------------------
@@ -844,6 +1158,9 @@ def render_compare_tab(primary_player: dict, model=None):
         fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
         st.plotly_chart(fig, use_container_width=True)
 
+    _render_comparison_verdict_cards(player_frames)
+    _render_percentile_compare_view(player_frames)
+
     if len(player_frames) == 2:
         st.markdown("## ⚔️ Head-to-Head")
         h2h_season_type = st.radio(
@@ -1017,11 +1334,11 @@ def render_compare_tab(primary_player: dict, model=None):
                 )
                 with st.spinner("Analyzing…"):
                     try:
-                        resp = model.generate_content(prompt2, generation_config={"max_output_tokens": 4096, "temperature": 0.6})
+                        text = ai_generate_text(model, prompt2, max_output_tokens=4096, temperature=0.6)
                         st.markdown("### 🧠 AI Analysis")
-                        st.write(resp.text if hasattr(resp, "text") else "No response.")
+                        st.write(text or "No response.")
                     except Exception as e:
                         st.warning(_friendly_ai_error_message(e))
                         st.caption(f"Details: {type(e).__name__}")
         else:
-            st.info("Add your Gemini API key to enable AI analysis.")
+            st.info("Add your OpenAI API key to enable AI analysis.")

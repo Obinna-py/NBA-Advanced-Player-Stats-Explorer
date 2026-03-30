@@ -24,6 +24,29 @@ _VIEW_TO_TOKEN = {
     "🤝 Compare Players": "compare",
 }
 _TOKEN_TO_VIEW = {token: label for label, token in _VIEW_TO_TOKEN.items()}
+_NL_ARCHETYPE_OPTIONS = [
+    "Custom search",
+    "3 and D",
+    "stretch 5",
+    "heliocentric guard",
+    "rim-running big",
+    "shot-creating wing",
+    "point center",
+    "floor-spacing big",
+    "catch and shoot specialist",
+    "movement shooter",
+    "slashing guard",
+    "drive and kick creator",
+    "primary playmaker",
+    "scoring playmaker",
+    "point of attack defender",
+    "two-way guard",
+    "point forward",
+    "all-around wing",
+    "connector wing",
+    "stretch rim protector",
+    "unicorn big",
+]
 
 
 def _load_share_state_from_url() -> None:
@@ -106,6 +129,14 @@ with st.sidebar:
     search_clicked = st.button("Search")
     st.divider()
     st.subheader("Natural Language Search")
+    nl_preset = st.selectbox(
+        "Choose an archetype / prompt",
+        _NL_ARCHETYPE_OPTIONS,
+        index=0,
+        key="nl_preset",
+    )
+    if nl_preset != "Custom search" and st.session_state.get("nl_query") != nl_preset:
+        st.session_state["nl_query"] = nl_preset
     nl_query = st.text_area(
         "Describe the kind of player you want",
         key="nl_query",

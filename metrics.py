@@ -4,6 +4,7 @@ import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+from config import ai_generate_text
 from fetch import get_team_totals_many, get_balldontlie_league_season_averages
 
 # ---------------------------
@@ -766,8 +767,8 @@ def compute_player_percentile_context(player_name: str, season_id: str, adv_df: 
 
 def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_df: pd.DataFrame | None = None) -> dict:
     """
-    Rules-based archetype detection using latest-season production and percentile context.
-    Returns a primary archetype, optional secondary archetype, confidence, and stat evidence.
+    Rules-based player typing using latest-season production and percentile context.
+    Returns primary / secondary roles plus basketball-style tags and impact tags.
     """
     if adv_df is None or adv_df.empty:
         return {}
@@ -813,181 +814,269 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
     three_pa = num("3PA/G")
     three_pct = num("3P%")
     ft_rate = num("FTr")
+    role_scores = {
+        "Scorer": 0.0,
+        "Playmaker": 0.0,
+        "Defender": 0.0,
+    }
+    role_reasons = {k: [] for k in role_scores}
 
-    archetypes = {
-        "Heliocentric Creator": {"score": 0, "evidence": []},
-        "Point Center / Offensive Hub": {"score": 0, "evidence": []},
-        "Unicorn Big": {"score": 0, "evidence": []},
-        "Stretch Big": {"score": 0, "evidence": []},
-        "Rim-Protecting Big": {"score": 0, "evidence": []},
-        "Two-Way Wing": {"score": 0, "evidence": []},
-        "Three-Level Scorer": {"score": 0, "evidence": []},
-        "Interior Finisher": {"score": 0, "evidence": []},
-        "Secondary Playmaker": {"score": 0, "evidence": []},
-        "Shot-Creating Wing": {"score": 0, "evidence": []},
-        "3-and-D Wing": {"score": 0, "evidence": []},
-        "Combo Guard Scorer": {"score": 0, "evidence": []},
-        "Floor-Spacing Big": {"score": 0, "evidence": []},
-        "Rim-Running Big": {"score": 0, "evidence": []},
-        "Glass-Cleaning Big": {"score": 0, "evidence": []},
+    style_tags = {}
+    impact_tags = {}
+    tag_descriptions = {
+        "3-Level Scorer": "Scores across the arc, midrange, and rim.",
+        "Shot Creator / Isolation Scorer": "Creates their own shot consistently in tough situations.",
+        "Catch-and-Shoot Specialist": "An elite off-ball shooter who punishes space quickly.",
+        "Microwave Scorer": "Can heat up fast and produce points in a hurry.",
+        "Primary Playmaker": "Organizes the offense and controls possession flow.",
+        "Scoring Playmaker": "Blends real scoring burden with shot creation for teammates.",
+        "Drive-and-Kick Creator": "Collapses the defense and creates open looks for others.",
+        "Slasher": "Lives off downhill attacks and rim pressure.",
+        "Transition Threat": "Creates major value in the open court.",
+        "Rim Pressure Guard": "Constantly bends the defense by getting downhill.",
+        "Point-of-Attack Defender": "Guards the ball and disrupts actions at the point of attack.",
+        "3-and-D Guard": "Provides spacing and defense without needing heavy usage.",
+        "Defensive Specialist": "Brings most of their value through defense-first impact.",
+        "Combo Guard": "Can toggle between scoring guard and secondary organizer roles.",
+        "Off-Ball Scoring Guard": "Scores through relocation, spacing, and quick-trigger shooting.",
+        "High-Usage Engine": "The offense revolves around this player’s usage and decision-making.",
+        "Secondary Creator": "Can run offense in stretches without being the full-time engine.",
+        "Two-Way Star Guard": "High-end guard offense paired with real defensive value.",
+        "3-Level Scoring Wing": "A wing who can score efficiently from every level.",
+        "Shot-Creating Wing": "Creates difficult shots and carries wing scoring burden.",
+        "Slashing Wing": "Wins through athletic downhill pressure and finishing.",
+        "3-and-D Wing": "Spaces the floor and defends on the perimeter.",
+        "Movement Shooter Wing": "Creates gravity by constantly relocating and shooting off movement.",
+        "Corner Specialist": "Generates value primarily as a catch-and-shoot corner spacer.",
+        "Point Forward": "A forward-sized initiator who can run offense.",
+        "Secondary Creator Wing": "A wing who can create without being the primary engine.",
+        "Perimeter Stopper": "Takes major perimeter defensive assignments.",
+        "Switchable Wing Defender": "Can defend across multiple positions with versatility.",
+        "Help Defender / Rotator": "Adds value through reads, rotations, and secondary defensive plays.",
+        "Two-Way Star Wing": "A high-end wing with strong offensive and defensive value.",
+        "Connector Wing": "Moves the ball, cuts, and keeps the offense flowing.",
+        "Glue Guy Wing": "Adds versatile low-maintenance value across many possessions.",
+        "Stretch Wing": "A bigger wing whose spacing changes floor geometry.",
+        "Rim Protector": "Anchors defense with shot blocking and paint deterrence.",
+        "Paint Beast / Interior Scorer": "Wins through power scoring around the paint.",
+        "Rebounding Big": "Dominates possession battles on the glass.",
+        "Lob Threat / Rim Runner": "Finishes vertical actions and pressures the rim hard.",
+        "Energy Big": "Creates value through effort, hustle, and putbacks.",
+        "Stretch Big": "A big who spaces the floor with real shooting.",
+        "Pick-and-Pop Big": "A big who threatens defenses by popping out to shoot.",
+        "Playmaking Hub (Point Center)": "A big who acts as an offensive hub and decision-maker.",
+        "Short Roll Playmaker": "Creates good decisions out of screening and short-roll touches.",
+        "Drop Coverage Anchor": "Protects the paint and stabilizes drop coverage possessions.",
+        "Switch Big": "Can survive or thrive in perimeter switches.",
+        "Weakside Shot Blocker": "Provides help-side rim protection and erases mistakes.",
+        "Two-Way Big": "Contributes meaningfully on both ends from the frontcourt.",
+        "Stretch Rim Protector": "Rare big who both spaces the floor and protects the rim.",
+        "Small-Ball Big": "Undersized but fast and versatile frontcourt piece.",
+        "Connector Big": "Keeps the offense flowing with screens, passes, and smart decisions.",
+        "Unicorn Big": "A rare big who blends size, skill, mobility, shooting, and/or rim protection unusually well.",
     }
 
-    def boost(name: str, amount: float, reason: str):
-        archetypes[name]["score"] += amount
-        archetypes[name]["evidence"].append(reason)
+    def boost_role(name: str, amount: float, reason: str):
+        role_scores[name] += amount
+        role_reasons[name].append(reason)
 
-    if pd.notna(usg) and usg >= 28:
-        boost("Heliocentric Creator", 2.0, f"High usage load ({usg:.1f}%).")
-        boost("Three-Level Scorer", 1.0, f"Carries real scoring volume ({usg:.1f}% usage).")
-        boost("Shot-Creating Wing", 0.8, f"Offense runs through self-created volume ({usg:.1f}% usage).")
-        boost("Combo Guard Scorer", 0.8, f"Carries a major scoring burden ({usg:.1f}% usage).")
-    if pd.notna(ast_pct) and ast_pct >= 30:
-        boost("Heliocentric Creator", 2.5, f"Elite playmaking share ({ast_pct:.1f} AST%).")
-        boost("Point Center / Offensive Hub", 2.0, f"Runs offense through creation ({ast_pct:.1f} AST%).")
-        boost("Secondary Playmaker", 0.8, f"Strong table-setting profile ({ast_pct:.1f} AST%).")
-    if pd.notna(apg) and apg >= 7:
-        boost("Heliocentric Creator", 1.8, f"Top-tier passing volume ({apg:.1f} APG).")
-        boost("Combo Guard Scorer", 0.8, f"Guard-like creation burden ({apg:.1f} APG).")
-    elif pd.notna(apg) and apg >= 4.5:
-        boost("Secondary Playmaker", 1.8, f"Meaningful creation role ({apg:.1f} APG).")
+    def boost_tag(bucket: dict, name: str, amount: float):
+        bucket[name] = bucket.get(name, 0.0) + amount
 
-    if "C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7):
-        boost("Unicorn Big", 0.8, "Frontcourt size/role profile.")
-        boost("Point Center / Offensive Hub", 0.8, "Big-man positional profile.")
-        boost("Stretch Big", 0.8, "Frontcourt size/role profile.")
-        boost("Rim-Protecting Big", 0.8, "Frontcourt defensive role.")
-        boost("Interior Finisher", 0.8, "Frontcourt interior role.")
-        boost("Floor-Spacing Big", 0.5, "Frontcourt profile with spacing upside.")
-        boost("Rim-Running Big", 0.5, "Frontcourt interior finisher profile.")
-        boost("Glass-Cleaning Big", 0.5, "Frontcourt rebounding profile.")
+    is_big = "C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7)
+    is_guard = "G" in position and "F" not in position
+    is_wing = ("F" in position and not is_big) or ("G" in position and "F" in position)
 
-    if pd.notna(three_pa) and three_pa >= 4.5 and pd.notna(three_pct) and three_pct >= 34:
-        boost("Unicorn Big", 1.6, f"Rare big-man perimeter volume ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
-        boost("Stretch Big", 2.0, f"Real floor-spacing volume ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
-        boost("Three-Level Scorer", 1.3, f"Strong perimeter scoring profile ({three_pa:.1f} 3PA/G).")
-        boost("Floor-Spacing Big", 2.2, f"Big-man shooting gravity ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
-        boost("3-and-D Wing", 1.0, f"High-volume catch-and-shoot threat ({three_pa:.1f} 3PA/G).")
-        boost("Shot-Creating Wing", 0.8, f"Perimeter volume supports shot-creation role ({three_pa:.1f} 3PA/G).")
-
-    if pd.notna(bpg) and bpg >= 2.0:
-        boost("Unicorn Big", 1.8, f"Big-man rim protection plus mobility ({bpg:.1f} BLK/G).")
-        boost("Rim-Protecting Big", 2.8, f"High rim protection output ({bpg:.1f} BLK/G).")
-        boost("Two-Way Wing", 0.8, f"Impact shot blocking ({bpg:.1f} BLK/G).")
-        boost("3-and-D Wing", 0.6, f"Strong defensive event production ({bpg:.1f} BLK/G).")
-    elif pd.notna(bpg) and bpg >= 1.0:
-        boost("Rim-Protecting Big", 1.4, f"Solid rim protection ({bpg:.1f} BLK/G).")
-
-    if pd.notna(trb_pct) and trb_pct >= 15:
-        boost("Rim-Protecting Big", 1.2, f"Strong rebounding share ({trb_pct:.1f} TRB%).")
-        boost("Point Center / Offensive Hub", 1.0, f"Controls possessions on the glass ({trb_pct:.1f} TRB%).")
-        boost("Glass-Cleaning Big", 2.2, f"Dominates the glass ({trb_pct:.1f} TRB%).")
-    if pd.notna(orb_pct) and orb_pct >= 8:
-        boost("Interior Finisher", 1.8, f"Creates extra possessions inside ({orb_pct:.1f} ORB%).")
-        boost("Rim-Running Big", 1.8, f"Pressure on the rim shows up on the offensive glass ({orb_pct:.1f} ORB%).")
-    if pd.notna(ts) and ts >= 60:
-        boost("Unicorn Big", 0.9, f"Pairs unusual skill with real efficiency ({ts:.1f} TS%).")
-        boost("Interior Finisher", 1.4, f"Finishes efficiently ({ts:.1f} TS%).")
-        boost("Three-Level Scorer", 1.2, f"Scoring efficiency is strong ({ts:.1f} TS%).")
-        boost("Rim-Running Big", 1.2, f"High-efficiency finishing profile ({ts:.1f} TS%).")
     if pd.notna(ppg) and ppg >= 24:
-        boost("Unicorn Big", 1.1, f"Star-level scoring from a big profile ({ppg:.1f} PPG).")
-        boost("Three-Level Scorer", 2.0, f"High scoring volume ({ppg:.1f} PPG).")
-        boost("Shot-Creating Wing", 1.6, f"Produces star-level wing scoring volume ({ppg:.1f} PPG).")
-        boost("Combo Guard Scorer", 1.6, f"Produces star-level guard scoring volume ({ppg:.1f} PPG).")
+        boost_role("Scorer", 2.4, f"Star scoring load ({ppg:.1f} PPG).")
     elif pd.notna(ppg) and ppg >= 18:
-        boost("Three-Level Scorer", 1.0, f"Reliable scoring role ({ppg:.1f} PPG).")
+        boost_role("Scorer", 1.6, f"Strong scoring role ({ppg:.1f} PPG).")
+    elif pd.notna(ppg) and ppg >= 12:
+        boost_role("Scorer", 0.8, f"Meaningful scoring role ({ppg:.1f} PPG).")
 
-    if pd.notna(spg) and spg >= 1.2 and pd.notna(bpg) and bpg >= 0.8:
-        boost("Two-Way Wing", 2.0, f"Stocks profile supports two-way impact ({spg:.1f} STL, {bpg:.1f} BLK).")
-        boost("3-and-D Wing", 1.8, f"Defensive playmaking supports 3-and-D role ({spg:.1f} STL, {bpg:.1f} BLK).")
-    if pd.notna(three_pa) and three_pa >= 5 and pd.notna(three_pct) and three_pct >= 35:
-        boost("Two-Way Wing", 1.0, f"Adds real perimeter spacing ({three_pa:.1f} 3PA/G).")
-        boost("3-and-D Wing", 1.8, f"Volume plus accuracy from deep fits 3-and-D mold ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
+    if pd.notna(ast_pct) and ast_pct >= 30:
+        boost_role("Playmaker", 2.4, f"Elite creation share ({ast_pct:.1f} AST%).")
+    elif pd.notna(ast_pct) and ast_pct >= 20:
+        boost_role("Playmaker", 1.5, f"Strong secondary creation ({ast_pct:.1f} AST%).")
+    if pd.notna(apg) and apg >= 7:
+        boost_role("Playmaker", 1.8, f"High passing volume ({apg:.1f} APG).")
+    elif pd.notna(apg) and apg >= 4.5:
+        boost_role("Playmaker", 0.9, f"Real playmaking load ({apg:.1f} APG).")
 
-    if pd.notna(ast_pct) and ast_pct >= 20 and pd.notna(usg) and usg < 28:
-        boost("Secondary Playmaker", 1.4, f"Creates offense without extreme usage ({ast_pct:.1f} AST%, {usg:.1f} USG%).")
-        boost("Shot-Creating Wing", 0.8, f"Can bend the defense and create for others ({ast_pct:.1f} AST%).")
-        boost("Combo Guard Scorer", 0.8, f"Can score and create without carrying the full offense ({ast_pct:.1f} AST%).")
-    if ("C" in position or "F" in position) and pd.notna(ast_pct) and ast_pct >= 16:
-        boost("Unicorn Big", 1.3, f"Unusual playmaking for a frontcourt player ({ast_pct:.1f} AST%).")
-    if pd.notna(ft_rate) and ft_rate >= 0.28:
-        boost("Interior Finisher", 0.8, f"Gets to the line at a healthy rate ({ft_rate:.2f} FTr).")
-        boost("Three-Level Scorer", 0.5, f"Pressure on defenses shows up in foul drawing ({ft_rate:.2f} FTr).")
-        boost("Shot-Creating Wing", 0.8, f"Creates contact and rim pressure ({ft_rate:.2f} FTr).")
-        boost("Combo Guard Scorer", 0.8, f"Attacks enough to draw fouls ({ft_rate:.2f} FTr).")
+    if pd.notna(spg) and spg >= 1.4:
+        boost_role("Defender", 1.1, f"Strong event-defense production ({spg:.1f} STL/G).")
+    if pd.notna(bpg) and bpg >= 1.8:
+        boost_role("Defender", 2.0, f"Major rim protection output ({bpg:.1f} BLK/G).")
+    elif pd.notna(bpg) and bpg >= 1.0:
+        boost_role("Defender", 0.9, f"Useful shot blocking ({bpg:.1f} BLK/G).")
+    if pct("BLK/G") >= 90 or pct("STL/G") >= 90:
+        boost_role("Defender", 0.8, "Top-end defensive event percentile.")
 
-    if pct("APG") >= 95 or pct("AST%") >= 95:
-        boost("Heliocentric Creator", 1.0, f"League-elite playmaking percentile ({max(pct('APG'), pct('AST%')):.1f}).")
-        boost("Point Center / Offensive Hub", 0.8, f"Rare passing for role ({max(pct('APG'), pct('AST%')):.1f} percentile).")
-    if ("C" in position or "F" in position) and (pct("AST%") >= 85 or pct("APG") >= 85):
-        boost("Unicorn Big", 1.0, f"Rare frontcourt playmaking percentile ({max(pct('APG'), pct('AST%')):.1f}).")
-    if pct("RPG") >= 95 or pct("TRB%") >= 95:
-        boost("Rim-Protecting Big", 0.8, f"Elite glass work ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
-        boost("Point Center / Offensive Hub", 0.6, f"Owns the glass ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
-        boost("Glass-Cleaning Big", 1.2, f"Elite rebounding percentile ({max(pct('RPG'), pct('TRB%')):.1f}).")
-    if pct("BLK/G") >= 95:
-        boost("Unicorn Big", 1.0, f"Rare shot-blocking percentile for a skilled frontcourt player ({pct('BLK/G'):.1f}).")
-        boost("Rim-Protecting Big", 1.0, f"Elite shot-blocking percentile ({pct('BLK/G'):.1f}).")
-        boost("3-and-D Wing", 0.5, f"Rare defensive event percentile ({pct('BLK/G'):.1f}).")
-    if pct("TS%") >= 90 and pct("PPG") >= 90:
-        boost("Unicorn Big", 0.8, "Combines big-man size with star scoring efficiency and volume.")
-        boost("Three-Level Scorer", 1.0, f"Combines scoring volume and efficiency at elite percentile levels.")
-        boost("Shot-Creating Wing", 0.8, "Looks like a top-end scoring engine by efficiency and volume.")
-        boost("Combo Guard Scorer", 0.8, "Looks like a top-end scoring guard by efficiency and volume.")
+    if pd.notna(three_pa) and pd.notna(three_pct) and three_pa >= 4.5 and three_pct >= 35:
+        boost_tag(style_tags, "Catch-and-Shoot Specialist", 2.4)
+        boost_tag(style_tags, "Movement Shooter", 1.8)
+        if is_guard:
+            boost_tag(style_tags, "Off-Ball Scoring Guard", 2.0)
+        if is_wing:
+            boost_tag(style_tags, "Movement Shooter Wing", 2.0)
+            boost_tag(style_tags, "Stretch Wing", 1.4)
+    if pd.notna(three_pa) and pd.notna(three_pct) and three_pa >= 3 and three_pct >= 38:
+        boost_tag(style_tags, "Corner Specialist", 1.6)
+    if pd.notna(three_pa) and pd.notna(three_pct) and three_pa >= 5 and three_pct >= 36 and pd.notna(usg) and usg <= 24:
+        if is_guard:
+            boost_tag(style_tags, "3-and-D Guard", 1.8)
+        if is_wing:
+            boost_tag(style_tags, "3-and-D Wing", 2.0)
 
-    if "G" in position and pd.notna(apg) and apg >= 5 and pd.notna(ppg) and ppg >= 18:
-        boost("Combo Guard Scorer", 1.6, f"Blends scoring and guard creation ({ppg:.1f} PPG, {apg:.1f} APG).")
-    if ("F" in position or "G" in position) and pd.notna(ppg) and ppg >= 20 and pd.notna(three_pa) and three_pa >= 4:
-        boost("Shot-Creating Wing", 1.6, f"Wing-sized shot creation with perimeter volume ({ppg:.1f} PPG, {three_pa:.1f} 3PA/G).")
-    if ("F" in position or "G" in position) and pd.notna(three_pa) and three_pa >= 5 and pd.notna(spg) and spg >= 1.0:
-        boost("3-and-D Wing", 1.2, f"Spacing plus event defense profile ({three_pa:.1f} 3PA/G, {spg:.1f} STL/G).")
-    if "C" in position and pd.notna(three_pa) and three_pa >= 3.5:
-        boost("Unicorn Big", 1.0, f"Center-sized player with real floor-spacing volume ({three_pa:.1f} 3PA/G).")
-        boost("Floor-Spacing Big", 1.6, f"Center who stretches defenses ({three_pa:.1f} 3PA/G).")
-    if "C" in position and pd.notna(orb_pct) and orb_pct >= 9 and pd.notna(ts) and ts >= 58:
-        boost("Rim-Running Big", 1.8, f"Rim pressure and efficient interior finishing ({orb_pct:.1f} ORB%, {ts:.1f} TS%).")
-    if ("C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7)) and pd.notna(three_pa) and three_pa >= 3.5 and pd.notna(bpg) and bpg >= 1.5:
-        boost("Unicorn Big", 2.0, f"Blends frontcourt shooting and rim protection in a rare way ({three_pa:.1f} 3PA/G, {bpg:.1f} BLK/G).")
+    if pd.notna(usg) and usg >= 30:
+        boost_tag(style_tags, "High-Usage Engine", 2.4)
+        boost_tag(style_tags, "Shot Creator / Isolation Scorer", 1.4)
+    elif pd.notna(usg) and usg >= 26 and pd.notna(ppg) and ppg >= 20:
+        boost_tag(style_tags, "Shot Creator / Isolation Scorer", 2.0)
+        if is_guard:
+            boost_tag(style_tags, "Pull-Up Shot Creator", 1.8)
+        if is_wing:
+            boost_tag(style_tags, "Shot-Creating Wing", 2.2)
 
-    archetype_descriptions = {
-        "Heliocentric Creator": "The offense runs through this player as the main scorer and creator.",
-        "Point Center / Offensive Hub": "A big who acts like an offensive engine through passing, touches, and decision-making.",
-        "Unicorn Big": "A rare frontcourt player who blends size with perimeter skill, unusual creation, and/or rim protection in a way most bigs cannot.",
-        "Stretch Big": "A frontcourt player who adds real three-point volume and scoring gravity.",
-        "Floor-Spacing Big": "A big whose main offensive value includes pulling defenders out with shooting.",
-        "Rim-Protecting Big": "A big whose defensive identity is built around shot blocking and interior coverage.",
-        "Glass-Cleaning Big": "A frontcourt player who wins possessions with elite rebounding.",
-        "Rim-Running Big": "A big who pressures the rim, finishes efficiently, and creates value inside.",
-        "Two-Way Wing": "A wing who contributes on both ends with scoring utility and defensive activity.",
-        "3-and-D Wing": "A wing whose value comes from perimeter shooting plus disruptive defense.",
-        "Shot-Creating Wing": "A wing who can generate offense for himself and punish defenses with scoring volume.",
-        "Three-Level Scorer": "A player who can put up points efficiently across different areas of the floor.",
-        "Interior Finisher": "A player whose scoring comes heavily from pressure at the rim and efficient inside finishing.",
-        "Secondary Playmaker": "A player who may not run the whole offense but still creates a meaningful amount for teammates.",
-        "Combo Guard Scorer": "A scoring guard who can both create shots and handle a solid share of playmaking.",
+    if pd.notna(ft_rate) and ft_rate >= 0.30:
+        if is_guard:
+            boost_tag(style_tags, "Slasher", 1.8)
+            boost_tag(style_tags, "Rim Pressure Guard", 2.0)
+        if is_wing:
+            boost_tag(style_tags, "Slashing Wing", 2.0)
+        if is_big:
+            boost_tag(style_tags, "Paint Beast / Interior Scorer", 1.6)
+    if pd.notna(ft_rate) and ft_rate >= 0.36 and pd.notna(ppg) and ppg >= 18:
+        boost_tag(impact_tags, "Rim Pressure", 2.0)
+
+    if pd.notna(apg) and apg >= 8:
+        boost_tag(style_tags, "Primary Playmaker", 2.2)
+        if is_guard:
+            boost_tag(style_tags, "Primary Playmaker", 1.2)
+            boost_tag(style_tags, "Lead Guard Playmaker", 1.6)
+    if pd.notna(ast_pct) and ast_pct >= 28 and pd.notna(ppg) and ppg >= 18:
+        boost_tag(style_tags, "Scoring Playmaker", 2.2)
+    if pd.notna(ast_pct) and ast_pct >= 24 and pd.notna(ft_rate) and ft_rate >= 0.28:
+        boost_tag(style_tags, "Drive-and-Kick Creator", 2.0)
+    if pd.notna(apg) and apg >= 5 and pd.notna(ppg) and ppg >= 16:
+        boost_tag(style_tags, "Combo Guard", 1.8)
+    if pd.notna(ast_pct) and ast_pct >= 18 and pd.notna(usg) and usg < 28:
+        boost_tag(style_tags, "Secondary Creator", 1.8)
+        if is_wing:
+            boost_tag(style_tags, "Secondary Creator Wing", 1.8)
+    if is_wing and pd.notna(ast_pct) and ast_pct >= 20:
+        boost_tag(style_tags, "Point Forward", 2.2)
+
+    if pd.notna(spg) and spg >= 1.5:
+        if is_guard:
+            boost_tag(style_tags, "Point-of-Attack Defender", 2.1)
+            boost_tag(style_tags, "Defensive Specialist", 1.2)
+        if is_wing:
+            boost_tag(style_tags, "Perimeter Stopper", 1.8)
+            boost_tag(style_tags, "Help Defender / Rotator", 1.0)
+    if is_wing and pd.notna(spg) and spg >= 1.1 and pd.notna(bpg) and bpg >= 0.8:
+        boost_tag(style_tags, "Switchable Wing Defender", 2.0)
+        boost_tag(style_tags, "Two-Way Wing", 1.6)
+    if is_guard and pd.notna(spg) and spg >= 1.2 and pd.notna(three_pa) and three_pa >= 4.5:
+        boost_tag(style_tags, "Two-Way Guard", 1.8)
+    if is_guard and pd.notna(ppg) and ppg >= 22 and pd.notna(spg) and spg >= 1.3:
+        boost_tag(style_tags, "Two-Way Star Guard", 1.8)
+    if is_wing and pd.notna(ppg) and ppg >= 22 and (pd.notna(spg) and spg >= 1.1 or pd.notna(bpg) and bpg >= 0.8):
+        boost_tag(style_tags, "Two-Way Star Wing", 2.0)
+        boost_tag(style_tags, "All-Around Wing", 1.6)
+
+    if is_wing and pd.notna(rpg) and rpg >= 6 and pd.notna(apg) and apg >= 4:
+        boost_tag(style_tags, "All-Around Wing", 2.0)
+        boost_tag(style_tags, "Connector Wing", 1.4)
+    if is_wing and pd.notna(usg) and usg <= 22 and pd.notna(three_pa) and three_pa >= 4 and pd.notna(apg) and apg >= 3:
+        boost_tag(style_tags, "Connector Wing", 1.8)
+        boost_tag(style_tags, "Glue Guy Wing", 1.8)
+    if is_wing and pd.notna(three_pa) and three_pa >= 5.5 and pd.notna(ppg) and ppg < 23:
+        boost_tag(style_tags, "Off-Ball Scoring Wing", 2.0)
+
+    if is_big:
+        if pd.notna(bpg) and bpg >= 2.0:
+            boost_tag(style_tags, "Rim Protector", 2.4)
+            boost_tag(impact_tags, "Rim Protection", 2.3)
+            boost_tag(style_tags, "Drop Coverage Anchor", 1.7)
+            boost_tag(style_tags, "Weakside Shot Blocker", 1.6)
+        if pd.notna(trb_pct) and trb_pct >= 16:
+            boost_tag(style_tags, "Rebounding Big", 2.0)
+        if pd.notna(orb_pct) and orb_pct >= 8:
+            boost_tag(style_tags, "Lob Threat / Rim Runner", 1.7)
+            boost_tag(style_tags, "Energy Big", 1.3)
+        if pd.notna(three_pa) and pd.notna(three_pct) and three_pa >= 3.5 and three_pct >= 34:
+            boost_tag(style_tags, "Stretch Big", 2.2)
+            boost_tag(style_tags, "Pick-and-Pop Big", 1.8)
+            boost_tag(impact_tags, "Gravity", 1.8)
+        if pd.notna(ast_pct) and ast_pct >= 20:
+            boost_tag(style_tags, "Playmaking Hub (Point Center)", 2.4)
+            boost_tag(impact_tags, "Playmaking Hub", 2.1)
+        if pd.notna(ast_pct) and ast_pct >= 14:
+            boost_tag(style_tags, "Short Roll Playmaker", 1.4)
+            boost_tag(style_tags, "Connector Big", 1.2)
+        if pd.notna(ts) and ts >= 60 and pd.notna(ppg) and ppg >= 20 and pd.notna(bpg) and bpg >= 1.5:
+            boost_tag(style_tags, "Two-Way Big", 1.8)
+        if pd.notna(three_pa) and three_pa >= 3.5 and pd.notna(bpg) and bpg >= 1.5:
+            boost_tag(style_tags, "Stretch Rim Protector", 2.2)
+        if "F" in position and "C" not in position and pd.notna(rpg) and rpg >= 7 and pd.notna(three_pa) and three_pa >= 2.5 and pd.notna(apg) and apg >= 3:
+            boost_tag(style_tags, "Small-Ball Big", 1.8)
+        if pd.notna(three_pa) and three_pa >= 3.5 and pd.notna(bpg) and bpg >= 1.5 and pd.notna(ast_pct) and ast_pct >= 16:
+            boost_tag(style_tags, "Unicorn Big", 2.5)
+
+    if pd.notna(three_pa) and three_pa >= 5:
+        boost_tag(impact_tags, "Gravity", 1.6)
+    if pd.notna(ast_pct) and ast_pct >= 24:
+        boost_tag(impact_tags, "Assist Creation", 1.8)
+    if pd.notna(three_pa) and pd.notna(three_pct) and three_pa >= 4.5 and three_pct >= 36 and pd.notna(usg) and usg <= 20:
+        boost_tag(style_tags, "Catch-and-Shoot Specialist", 1.8)
+
+    role_descriptions = {
+        "Scorer": "This player’s cleanest statistical identity is putting points on the board efficiently or at volume.",
+        "Playmaker": "This player’s clearest value comes from organizing offense and creating shots for teammates.",
+        "Defender": "This player’s strongest identity shows up in defensive disruption, deterrence, or possession-ending work.",
     }
 
-    ranked = sorted(
-        [{"name": name, **payload} for name, payload in archetypes.items()],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
-    primary = ranked[0]
-    secondary = ranked[1] if len(ranked) > 1 and ranked[1]["score"] >= 2.5 else None
+    ranked_roles = sorted(role_scores.items(), key=lambda x: x[1], reverse=True)
+    primary_role = ranked_roles[0][0]
+    secondary_role = ranked_roles[1][0] if len(ranked_roles) > 1 and ranked_roles[1][1] >= 1.5 else None
 
-    confidence = min(0.95, max(0.45, 0.45 + (primary["score"] / 10.0)))
+    style_ranked = sorted(style_tags.items(), key=lambda x: x[1], reverse=True)
+    impact_ranked = sorted(impact_tags.items(), key=lambda x: x[1], reverse=True)
+
+    if not style_ranked:
+        fallback_style = "3-Level Scorer" if primary_role == "Scorer" else "Primary Playmaker" if primary_role == "Playmaker" else "Defensive Specialist"
+        style_ranked = [(fallback_style, 1.0)]
+
+    top_style = [name for name, score in style_ranked if score >= 1.4][:5]
+    if len(top_style) < 3:
+        for name, _ in style_ranked:
+            if name not in top_style:
+                top_style.append(name)
+            if len(top_style) >= 3:
+                break
+
+    top_impact = [name for name, score in impact_ranked if score >= 1.5][:4]
+    evidence = []
+    for reason in role_reasons.get(primary_role, [])[:2]:
+        evidence.append(reason)
+    top_style_name = top_style[0] if top_style else None
+    if top_style_name:
+        evidence.append(f"Best-fit style tag: {top_style_name}.")
+
+    confidence = min(0.96, max(0.5, 0.48 + ((ranked_roles[0][1] + (style_ranked[0][1] if style_ranked else 0)) / 12.0)))
     return {
         "player_name": player_name,
-        "primary": primary["name"],
-        "secondary": secondary["name"] if secondary else None,
-        "primary_description": archetype_descriptions.get(primary["name"], ""),
-        "secondary_description": archetype_descriptions.get(secondary["name"], "") if secondary else None,
+        "primary": primary_role,
+        "secondary": secondary_role,
+        "primary_description": role_descriptions.get(primary_role, ""),
+        "secondary_description": role_descriptions.get(secondary_role, "") if secondary_role else None,
         "confidence": round(confidence, 2),
-        "evidence": primary["evidence"][:4],
-        "style_scores": [
-            {"Archetype": item["name"], "Score": round(item["score"], 2)}
-            for item in ranked if item["score"] > 0
-        ],
+        "evidence": evidence[:4],
+        "style_scores": [{"Archetype": name, "Score": round(score, 2)} for name, score in style_ranked[:12]],
+        "style_tags": top_style,
+        "impact_tags": top_impact,
+        "tag_descriptions": {tag: tag_descriptions.get(tag, "") for tag in set(top_style + top_impact)},
     }
 
 
@@ -1277,11 +1366,15 @@ def _fallback_nl_query_parse(query: str) -> dict:
 def _apply_nl_query_overrides(query: str, parsed: dict) -> dict:
     q = str(query or "").lower().strip()
     out = dict(parsed or {})
+    out.setdefault("min_fg3_pct", None)
+    out.setdefault("min_fg3a", None)
 
     if any(term in q for term in ["3 and d", "3-and-d", "3&d", "3nd", "3 n d"]):
         out["position_family"] = "wing"
         out["metric_keys"] = ["shooting", "three_point_volume", "steals"]
         out["min_percentile"] = max(int(out.get("min_percentile") or 0), 75)
+        out["min_fg3_pct"] = max(float(out.get("min_fg3_pct") or 0.0), 0.35)
+        out["min_fg3a"] = max(float(out.get("min_fg3a") or 0.0), 4.0)
         out["summary"] = "Searching for wing-sized 3-and-D profiles."
 
     if any(term in q for term in ["stretch 5", "stretch five", "stretch-five"]):
@@ -1323,6 +1416,86 @@ def _apply_nl_query_overrides(query: str, parsed: dict) -> dict:
         out["min_percentile"] = max(int(out.get("min_percentile") or 0), 70)
         out["summary"] = "Searching for bigs who stretch the floor with real shooting value."
 
+    if any(term in q for term in ["catch and shoot specialist", "catch-and-shoot specialist", "catch and shoot"]):
+        out["position_family"] = out.get("position_family") or None
+        out["metric_keys"] = ["shooting", "three_point_volume", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 78)
+        out["summary"] = "Searching for elite off-ball shooters with real volume."
+
+    if any(term in q for term in ["movement shooter", "movement shooter wing", "off ball shooter", "off-ball shooter"]):
+        out["metric_keys"] = ["shooting", "three_point_volume", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 75)
+        out["summary"] = "Searching for high-gravity movement shooters."
+
+    if any(term in q for term in ["slashing guard", "slasher", "rim pressure guard", "rim pressure"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["scoring", "efficiency", "usage"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 72)
+        out["summary"] = "Searching for downhill guards who pressure the rim."
+
+    if any(term in q for term in ["drive and kick creator", "drive-and-kick creator"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["playmaking", "usage", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 74)
+        out["summary"] = "Searching for guards who collapse the defense and create shots for others."
+
+    if any(term in q for term in ["primary playmaker", "floor general", "lead guard playmaker"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["playmaking", "usage", "ball_security"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 78)
+        out["summary"] = "Searching for primary ball-handlers who organize the offense."
+
+    if any(term in q for term in ["scoring playmaker", "combo guard scorer", "high usage engine"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["scoring", "playmaking", "usage", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 78)
+        out["summary"] = "Searching for offensive engines who both score and create."
+
+    if any(term in q for term in ["point of attack defender", "point-of-attack defender", "defensive specialist"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["steals", "three_point_volume"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 72)
+        out["summary"] = "Searching for defense-first guards with real perimeter utility."
+
+    if any(term in q for term in ["two-way guard", "3-and-d guard", "3 and d guard"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["steals", "shooting", "three_point_volume"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 74)
+        out["min_fg3_pct"] = max(float(out.get("min_fg3_pct") or 0.0), 0.35)
+        out["min_fg3a"] = max(float(out.get("min_fg3a") or 0.0), 4.0)
+        out["summary"] = "Searching for guards who bring both perimeter defense and shooting."
+
+    if any(term in q for term in ["point forward"]):
+        out["position_family"] = "wing"
+        out["metric_keys"] = ["playmaking", "rebounding", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 72)
+        out["summary"] = "Searching for forward-sized offensive initiators."
+
+    if any(term in q for term in ["all-around wing", "two-way star wing"]):
+        out["position_family"] = "wing"
+        out["metric_keys"] = ["scoring", "playmaking", "rebounding", "steals"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 74)
+        out["summary"] = "Searching for versatile wings who fill multiple boxes."
+
+    if any(term in q for term in ["connector wing", "glue guy wing"]):
+        out["position_family"] = "wing"
+        out["metric_keys"] = ["playmaking", "shooting", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 68)
+        out["summary"] = "Searching for low-maintenance wings who keep the offense flowing."
+
+    if any(term in q for term in ["stretch rim protector", "stretch-rim protector"]):
+        out["position_family"] = "big"
+        out["force_center"] = True
+        out["metric_keys"] = ["shooting", "three_point_volume", "rim_protection"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 78)
+        out["summary"] = "Searching for the rare bigs who both space the floor and protect the rim."
+
+    if any(term in q for term in ["unicorn big"]):
+        out["position_family"] = "big"
+        out["metric_keys"] = ["shooting", "rim_protection", "playmaking", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 80)
+        out["summary"] = "Searching for rare bigs with uncommon all-around skill packages."
+
     return out
 
 
@@ -1338,15 +1511,14 @@ def _ai_parse_nl_query(query: str, model=None) -> dict | None:
         f"Query: {query}"
     )
     try:
-        resp = model.generate_content(
+        text = ai_generate_text(
+            model,
             prompt,
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 220,
-                "response_mime_type": "application/json",
-            },
+            max_output_tokens=220,
+            temperature=0.1,
+            json_mode=True,
         )
-        parsed = _extract_json_object(getattr(resp, "text", "") or "")
+        parsed = _extract_json_object(text)
         if not parsed:
             return None
         parsed["metric_keys"] = [m for m in parsed.get("metric_keys", []) if m in _NL_METRIC_DEFS]
@@ -1428,6 +1600,8 @@ def find_players_by_natural_language(query: str, season: int | None, limit: int,
     position_family = parsed.get("position_family")
     min_percentile = parsed.get("min_percentile")
     force_center = bool(parsed.get("force_center"))
+    min_fg3_pct = parsed.get("min_fg3_pct")
+    min_fg3a = parsed.get("min_fg3a")
 
     comp = league_df.copy()
     if "gp" in comp.columns:
@@ -1438,6 +1612,10 @@ def find_players_by_natural_language(query: str, season: int | None, limit: int,
         comp = comp[comp["POSITION"].apply(_position_family) == position_family].copy()
     if force_center:
         comp = comp[comp["POSITION"].astype(str).str.upper().str.contains("C", na=False)].copy()
+    if min_fg3_pct is not None:
+        comp = comp[pd.to_numeric(comp.get("fg3_pct"), errors="coerce") >= float(min_fg3_pct)].copy()
+    if min_fg3a is not None:
+        comp = comp[pd.to_numeric(comp.get("fg3a"), errors="coerce") >= float(min_fg3a)].copy()
     if comp.empty:
         return pd.DataFrame(), {
             "message": "No players matched that position filter in the latest-season pool.",
@@ -1529,6 +1707,10 @@ def find_players_by_natural_language(query: str, season: int | None, limit: int,
         "unsupported_terms": parsed.get("unsupported_terms", []),
         "used_position_filter": position_family,
         "metric_labels": [_NL_METRIC_DEFS[key]["label"] for key in metric_keys],
+        "shooting_floor": {
+            "min_fg3_pct": min_fg3_pct,
+            "min_fg3a": min_fg3a,
+        },
         "strict_match_count": int(len(strict)) if min_percentile is not None else int(len(candidates)),
         "relaxed": bool(min_percentile is not None and strict.empty),
         "season": season,
