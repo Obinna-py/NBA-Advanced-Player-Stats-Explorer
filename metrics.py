@@ -1,7 +1,7 @@
 # nba_app/metrics.py
 import numpy as np
 import pandas as pd
-from fetch import get_team_totals_many
+from fetch import get_team_totals_many, get_balldontlie_league_season_averages
 
 # ---------------------------
 # Numeric helpers / formatting
@@ -650,3 +650,112 @@ def build_ai_phase_table(adv_df: pd.DataFrame) -> pd.DataFrame:
         out["Season"] = out["Season"].astype(str).replace({"—": "", "nan": "", "None": ""})
 
     return out
+
+
+def compute_player_percentile_context(player_name: str, season_id: str, adv_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a compact ranking / percentile table for the player's latest season.
+    Uses league-wide balldontlie season averages and existing rank fields when available.
+    """
+    if adv_df is None or adv_df.empty or not season_id:
+        return pd.DataFrame()
+
+    try:
+        season_start = int(str(season_id)[:4])
+    except Exception:
+        return pd.DataFrame()
+
+    league_df = get_balldontlie_league_season_averages(season_start)
+    if league_df is None or league_df.empty:
+        return pd.DataFrame()
+
+    player_rows = league_df[league_df["PLAYER_NAME"].astype(str).str.lower() == str(player_name).lower()].copy()
+    if player_rows.empty:
+        return pd.DataFrame()
+
+    player_row = player_rows.iloc[0]
+    total_players = int(league_df["PLAYER_ID"].nunique()) if "PLAYER_ID" in league_df.columns else int(len(league_df))
+
+    latest = adv_df.iloc[-1]
+    gp = pd.to_numeric(latest.get("GP"), errors="coerce")
+
+    def _player_display_value(label: str):
+        if label in latest.index and pd.notna(latest.get(label)):
+            return latest.get(label)
+        if label == "PPG":
+            pts = pd.to_numeric(latest.get("PTS"), errors="coerce")
+            return (pts / gp) if pd.notna(pts) and pd.notna(gp) and gp > 0 else np.nan
+        if label == "RPG":
+            reb = pd.to_numeric(latest.get("REB"), errors="coerce")
+            return (reb / gp) if pd.notna(reb) and pd.notna(gp) and gp > 0 else np.nan
+        if label == "APG":
+            ast = pd.to_numeric(latest.get("AST"), errors="coerce")
+            return (ast / gp) if pd.notna(ast) and pd.notna(gp) and gp > 0 else np.nan
+        if label == "BLK/G":
+            blk = pd.to_numeric(latest.get("BLK"), errors="coerce")
+            return (blk / gp) if pd.notna(blk) and pd.notna(gp) and gp > 0 else np.nan
+        if label == "STL/G":
+            stl = pd.to_numeric(latest.get("STL"), errors="coerce")
+            return (stl / gp) if pd.notna(stl) and pd.notna(gp) and gp > 0 else np.nan
+        return np.nan
+
+    metrics = [
+        ("PPG", "pts", "pts_rank", True, "Scoring"),
+        ("RPG", "reb", "reb_rank", True, "Rebounding"),
+        ("APG", "ast", "ast_rank", True, "Playmaking"),
+        ("TS%", "ts_pct", "ts_pct_rank", False, "Efficiency"),
+        ("eFG%", "efg_pct", "efg_pct_rank", False, "Efficiency"),
+        ("USG%", "usg_pct", "usg_pct_rank", False, "Role"),
+        ("AST%", "ast_pct", "ast_pct_rank", False, "Playmaking"),
+        ("TRB%", "reb_pct", "reb_pct_rank", False, "Rebounding"),
+        ("ORB%", "oreb_pct", "oreb_pct_rank", False, "Rebounding"),
+        ("DRB%", "dreb_pct", "dreb_pct_rank", False, "Rebounding"),
+        ("AST/TO", "ast_to", "ast_to_rank", True, "Playmaking"),
+        ("3P%", "fg3_pct", "fg3_pct_rank", False, "Shooting"),
+        ("FT%", "ft_pct", "ft_pct_rank", False, "Shooting"),
+        ("BLK/G", "blk", "blk_rank", True, "Defense"),
+        ("STL/G", "stl", "stl_rank", True, "Defense"),
+    ]
+
+    rows = []
+    for label, league_col, rank_col, use_adv_value_directly, group in metrics:
+        if label not in latest.index and league_col not in player_row.index:
+            continue
+
+        value = _player_display_value(label)
+        if pd.isna(value) and league_col in player_row.index:
+            value = player_row.get(league_col)
+            if pd.notna(value) and not use_adv_value_directly and label.endswith("%"):
+                value = float(value) * 100.0
+
+        rank_val = pd.to_numeric(player_row.get(rank_col), errors="coerce") if rank_col in player_row.index else np.nan
+        if pd.isna(rank_val) or not total_players:
+            continue
+
+        rank_int = int(rank_val)
+        percentile = round(((total_players - rank_int) / max(total_players - 1, 1)) * 100.0, 1)
+        rows.append({
+            "Metric": label,
+            "Value": value,
+            "Rank": rank_int,
+            "Percentile": percentile,
+            "Of": total_players,
+            "Category": group,
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    sort_order = {
+        "Scoring": 0,
+        "Efficiency": 1,
+        "Playmaking": 2,
+        "Rebounding": 3,
+        "Defense": 4,
+        "Role": 5,
+        "Shooting": 6,
+    }
+    out["__order"] = out["Category"].map(sort_order).fillna(99)
+    out = out.sort_values(["__order", "Percentile"], ascending=[True, False]).drop(columns="__order")
+    return out.reset_index(drop=True)

@@ -5,7 +5,7 @@ import streamlit as st
 from datetime import datetime
 from logos import college_logos
 from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url
-from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet
+from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
 from ui_compare import render_html_table, _make_readable_stats_table
@@ -280,6 +280,36 @@ def stats_tab(player, model):
             st.info(
                 "Showing the latest season view. "
                 "Turn on “ALL seasons” above to load the full career when available."
+            )
+
+        latest_season_id = str(adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in adv.columns else ""
+        percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, adv)
+        if not percentile_df.empty:
+            st.markdown("### 📈 Percentile & Ranking Context")
+            st.caption("Latest-season context versus the league distribution from balldontlie season averages.")
+
+            top_rows = percentile_df.head(6).copy()
+            summary_cols = st.columns(min(3, len(top_rows)))
+            for col, (_, row) in zip(summary_cols, top_rows.iterrows()):
+                with col:
+                    st.metric(
+                        row["Metric"],
+                        f"{row['Percentile']:.1f} pct",
+                        delta=f"Rank {int(row['Rank'])} / {int(row['Of'])}",
+                    )
+
+            display_df = percentile_df.copy()
+            display_df["Percentile"] = pd.to_numeric(display_df["Percentile"], errors="coerce")
+            display_df["Rank / Field"] = display_df.apply(
+                lambda r: f"{int(r['Rank'])} / {int(r['Of'])}" if pd.notna(r["Rank"]) and pd.notna(r["Of"]) else "—",
+                axis=1,
+            )
+            display_df = display_df[["Category", "Metric", "Value", "Percentile", "Rank / Field"]]
+            render_html_table(
+                display_df,
+                number_cols=["Value"],
+                percent_cols=["Percentile"],
+                max_height_px=360,
             )
     if adv is not None and not adv.empty and model:
         st.markdown("### 🧠 AI Career Phases")

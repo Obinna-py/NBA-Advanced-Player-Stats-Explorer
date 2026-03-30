@@ -712,6 +712,75 @@ def _get_balldontlie_latest_stats(full_name: str, per_mode: str, all_seasons: bo
     return pd.DataFrame(rows)
 
 
+def _fetch_balldontlie_season_average_type(season: int, stat_type: str) -> pd.DataFrame:
+    rows = []
+    cursor = None
+
+    while True:
+        params = {
+            "season": season,
+            "season_type": "regular",
+            "type": stat_type,
+            "per_page": 100,
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+
+        payload = _balldontlie_get(
+            "/v1/season_averages/general",
+            params=params,
+            timeout=max(_BALLDONTLIE_TIMEOUT_S, 8),
+        )
+        data = payload.get("data", []) or []
+        for item in data:
+            player = item.get("player", {}) or {}
+            stats = item.get("stats", {}) or {}
+            row = {
+                "PLAYER_ID": player.get("id"),
+                "PLAYER_NAME": f"{player.get('first_name', '')} {player.get('last_name', '')}".strip(),
+                "POSITION": player.get("position"),
+                "SEASON_START": item.get("season"),
+            }
+            row.update(stats)
+            rows.append(row)
+
+        cursor = (payload.get("meta") or {}).get("next_cursor")
+        if not cursor or not data:
+            break
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["SEASON_ID"] = df["SEASON_START"].apply(_season_id_from_year)
+        df["SOURCE_TYPE"] = stat_type
+    return df
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_balldontlie_league_season_averages(season: int) -> pd.DataFrame:
+    try:
+        base_df = _fetch_balldontlie_season_average_type(season, "base")
+        adv_df = _fetch_balldontlie_season_average_type(season, "advanced")
+    except Exception as e:
+        return _empty_result_with_error(e)
+
+    if base_df.empty and adv_df.empty:
+        return pd.DataFrame()
+    if base_df.empty:
+        return adv_df
+    if adv_df.empty:
+        return base_df
+
+    overlap_drop = [c for c in adv_df.columns if c in base_df.columns and c not in {"PLAYER_ID", "SEASON_ID", "SEASON_START", "PLAYER_NAME", "POSITION"}]
+    merged = base_df.merge(
+        adv_df.drop(columns=overlap_drop, errors="ignore"),
+        on=["PLAYER_ID", "PLAYER_NAME", "POSITION", "SEASON_START", "SEASON_ID"],
+        how="outer",
+    )
+    merged.attrs["provider"] = "balldontlie"
+    merged.attrs["season"] = season
+    return merged
+
+
 def search_players(full_name: str) -> list[dict]:
     if not full_name:
         return []
