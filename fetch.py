@@ -11,6 +11,7 @@ from config import BALLDONTLIE_API_KEY
 
 _CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "nba_api"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_WATCHLIST_FILE = _CACHE_DIR / "watchlist.json"
 _BALLDONTLIE_BASE = "https://api.balldontlie.io"
 _NBA_TIMEOUT_S = 5
 _BALLDONTLIE_TIMEOUT_S = 5
@@ -796,6 +797,95 @@ def search_players(full_name: str) -> list[dict]:
     exact = [p for p in found if p["full_name"].lower() == full_name.strip().lower()]
     found = exact if exact else found
     return found
+
+
+def player_to_share_token(player: dict | None) -> str | None:
+    if not player or "id" not in player:
+        return None
+    source = player.get("source", "nba_api")
+    return f"{source}:{player['id']}"
+
+
+def player_from_share_token(token: str) -> dict | None:
+    if not token or ":" not in token:
+        return None
+
+    source, raw_id = token.split(":", 1)
+    try:
+        player_id = int(raw_id)
+    except Exception:
+        return None
+
+    if source == "balldontlie":
+        player = get_balldontlie_player(player_id)
+        if not player:
+            return None
+        return {**player, "source": "balldontlie"}
+
+    player = static_players.find_player_by_id(player_id)
+    if not player:
+        return None
+    return {**player, "source": "nba_api"}
+
+
+def load_watchlist_tokens() -> list[str]:
+    if not _WATCHLIST_FILE.exists():
+        return []
+    try:
+        payload = json.loads(_WATCHLIST_FILE.read_text())
+    except Exception:
+        return []
+    tokens = payload.get("tokens", payload if isinstance(payload, list) else [])
+    if not isinstance(tokens, list):
+        return []
+    out = []
+    seen = set()
+    for token in tokens:
+        token = str(token).strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def save_watchlist_tokens(tokens: list[str]) -> None:
+    deduped = []
+    seen = set()
+    for token in tokens:
+        token = str(token).strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    _WATCHLIST_FILE.write_text(json.dumps({"tokens": deduped}, indent=2))
+
+
+def get_watchlist_players() -> list[dict]:
+    players = []
+    for token in load_watchlist_tokens():
+        player = player_from_share_token(token)
+        if player:
+            players.append(player)
+    return players
+
+
+def add_player_to_watchlist(player: dict | None) -> list[str]:
+    token = player_to_share_token(player)
+    if not token:
+        return load_watchlist_tokens()
+    tokens = load_watchlist_tokens()
+    if token not in tokens:
+        tokens.append(token)
+        save_watchlist_tokens(tokens)
+    return tokens
+
+
+def remove_player_from_watchlist(player: dict | None = None, token: str | None = None) -> list[str]:
+    target = token or player_to_share_token(player)
+    tokens = [t for t in load_watchlist_tokens() if t != target]
+    save_watchlist_tokens(tokens)
+    return tokens
 
 
 @st.cache_data(ttl=120, show_spinner=False)

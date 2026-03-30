@@ -1,14 +1,95 @@
 # ui_player.py
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
 from logos import college_logos
-from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url
+from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
 from ui_compare import render_html_table, _make_readable_stats_table
+
+
+_STAT_GLOSSARY = {
+    "TS%": {
+        "name": "True Shooting Percentage",
+        "meaning": "A scoring-efficiency stat that folds twos, threes, and free throws into one number.",
+        "reading": "Higher is better. Roughly speaking, high-50s is strong, 60%+ is elite for real volume scorers.",
+        "why_it_matters": "It gives a cleaner efficiency picture than plain field-goal percentage because it values threes and free throws properly.",
+    },
+    "eFG%": {
+        "name": "Effective Field Goal Percentage",
+        "meaning": "A shooting-efficiency stat that gives extra credit for made threes because they are worth more than twos.",
+        "reading": "Higher is better. It is especially useful for understanding shot-making from the field.",
+        "why_it_matters": "It shows whether a player is getting efficient value from their shot mix, but it does not include free throws.",
+    },
+    "USG%": {
+        "name": "Usage Percentage",
+        "meaning": "An estimate of how much of a team’s offense a player personally finishes while on the floor through shots, free throws, or turnovers.",
+        "reading": "Higher means more offensive burden. Around 20% is modest, upper-20s is star-level, and 30%+ is a huge load.",
+        "why_it_matters": "It helps separate players who put up stats in small roles from players carrying a real offensive workload.",
+    },
+    "AST%": {
+        "name": "Assist Percentage",
+        "meaning": "An estimate of the share of teammate field goals a player assisted while on the court.",
+        "reading": "Higher means more playmaking responsibility.",
+        "why_it_matters": "It is often more useful than raw assists per game because it adjusts better for team context and minutes.",
+    },
+    "TRB%": {
+        "name": "Total Rebound Percentage",
+        "meaning": "An estimate of the share of available rebounds a player grabbed while on the court.",
+        "reading": "Higher is better for rebounding impact.",
+        "why_it_matters": "It is better than raw rebounds alone when comparing players across roles, pace, and minutes.",
+    },
+    "ORB%": {
+        "name": "Offensive Rebound Percentage",
+        "meaning": "The estimated share of available offensive rebounds a player grabbed while on the court.",
+        "reading": "Higher means more second-chance creation on the offensive glass.",
+        "why_it_matters": "It helps identify rim-pressure bigs and energy rebounders.",
+    },
+    "DRB%": {
+        "name": "Defensive Rebound Percentage",
+        "meaning": "The estimated share of available defensive rebounds a player grabbed while on the court.",
+        "reading": "Higher means stronger defensive glass control.",
+        "why_it_matters": "It helps show who finishes possessions and stabilizes team defense.",
+    },
+    "AST/TO": {
+        "name": "Assist-to-Turnover Ratio",
+        "meaning": "A simple ball-control stat comparing how often a player creates an assist relative to how often they turn it over.",
+        "reading": "Higher is better, though role matters because high-usage creators are naturally exposed to more turnovers.",
+        "why_it_matters": "It is a quick read on playmaking efficiency and decision-making.",
+    },
+    "3PAr": {
+        "name": "Three-Point Attempt Rate",
+        "meaning": "The share of a player’s field-goal attempts that come from three-point range.",
+        "reading": "Higher means a more perimeter-heavy shot profile.",
+        "why_it_matters": "It helps explain whether a player’s shooting value comes from real spacing volume or just a small number of threes.",
+    },
+    "FTr": {
+        "name": "Free Throw Rate",
+        "meaning": "How often a player gets to the line relative to their field-goal attempts.",
+        "reading": "Higher usually means more rim pressure, physicality, or foul drawing.",
+        "why_it_matters": "It helps show which scorers generate easy points and pressure defenses.",
+    },
+    "PPS": {
+        "name": "Points Per Shot",
+        "meaning": "A simple efficiency read on how many points a player produces per field-goal attempt.",
+        "reading": "Higher is better.",
+        "why_it_matters": "It is a fast way to understand scoring return on shot volume.",
+    },
+}
+
+
+def _friendly_ai_error_message(error: Exception) -> str:
+    text = str(error or "").lower()
+    if any(term in text for term in ["quota", "resourceexhausted", "resource exhausted", "rate limit", "429"]):
+        return "AI is temporarily unavailable because the current Gemini quota has been reached. Please try again a little later."
+    if any(term in text for term in ["api key", "permission", "unauthorized", "403"]):
+        return "AI is unavailable right now because the Gemini connection or permissions need attention."
+    return "AI is unavailable right now. Please try again in a moment."
 
 
 def _age_from_birthdate(iso_dt: str) -> int:
@@ -118,6 +199,174 @@ def balldontlie_games_tab(player):
     except Exception as e:
         st.warning("Could not load team games from balldontlie right now.")
         st.caption(f"{type(e).__name__}: {e}")
+
+
+def _position_family_label(position: str) -> str:
+    pos = str(position or "").upper()
+    if "C" in pos:
+        return "Big"
+    if "G" in pos and "F" not in pos:
+        return "Guard"
+    if "F" in pos:
+        return "Wing"
+    return "Other"
+
+
+def _render_stat_explainer() -> None:
+    st.markdown("### 📚 Explain the Stats")
+    st.caption("Quick definitions for newer users so the advanced metrics stay readable.")
+
+    metric = st.selectbox(
+        "Pick a stat to explain",
+        list(_STAT_GLOSSARY.keys()),
+        index=0,
+        key="stat_glossary_picker",
+    )
+    item = _STAT_GLOSSARY[metric]
+    st.info(f"**{metric} — {item['name']}**")
+    st.write(f"**What it means:** {item['meaning']}")
+    st.write(f"**How to read it:** {item['reading']}")
+    st.write(f"**Why it matters:** {item['why_it_matters']}")
+
+    with st.expander("See the full glossary", expanded=False):
+        for stat, details in _STAT_GLOSSARY.items():
+            st.markdown(f"**{stat} — {details['name']}**")
+            st.write(details["meaning"])
+            st.caption(f"How to read it: {details['reading']}")
+            st.caption(f"Why it matters: {details['why_it_matters']}")
+
+
+def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, percentile_df: pd.DataFrame) -> None:
+    if adv is None or adv.empty:
+        return
+
+    st.markdown("### 🎛️ Player Dashboard")
+    st.caption("A quick visual story of this player's production, style, and league context.")
+
+    left, right = st.columns(2)
+
+    with left:
+        if "SEASON_ID" in adv.columns and len(adv) >= 2:
+            trend_df = adv.copy()
+            trend_df["Season"] = trend_df["SEASON_ID"].astype(str)
+            trend_df = trend_df.sort_values("Season")
+            chart_rows = []
+            metric_map = {
+                "PPG": "Scoring",
+                "RPG": "Rebounding",
+                "APG": "Playmaking",
+                "TS%": "Efficiency",
+            }
+            for col, label in metric_map.items():
+                if col not in trend_df.columns:
+                    continue
+                for _, row in trend_df.iterrows():
+                    val = pd.to_numeric(row.get(col), errors="coerce")
+                    if pd.isna(val):
+                        continue
+                    chart_rows.append({"Season": row["Season"], "Value": val, "Metric": label})
+            if chart_rows:
+                trend_plot = pd.DataFrame(chart_rows)
+                fig = px.line(
+                    trend_plot,
+                    x="Season",
+                    y="Value",
+                    color="Metric",
+                    markers=True,
+                    title="Career Arc",
+                )
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Not enough seasonal trend data to draw a career arc yet.")
+        else:
+            st.info("Turn on “ALL seasons” to unlock the career arc chart.")
+
+    with right:
+        if percentile_df is not None and not percentile_df.empty:
+            radar_metrics = ["PPG", "TS%", "APG", "TRB%", "BLK/G", "3P%"]
+            radar_rows = percentile_df[percentile_df["Metric"].isin(radar_metrics)].copy()
+            if not radar_rows.empty:
+                ordered = []
+                for metric in radar_metrics:
+                    match = radar_rows[radar_rows["Metric"] == metric]
+                    if not match.empty:
+                        ordered.append((metric, float(match.iloc[0]["Percentile"])))
+                if ordered:
+                    labels = [item[0] for item in ordered]
+                    values = [item[1] for item in ordered]
+                    labels.append(labels[0])
+                    values.append(values[0])
+                    radar = go.Figure()
+                    radar.add_trace(go.Scatterpolar(
+                        r=values,
+                        theta=labels,
+                        fill="toself",
+                        name=player_name,
+                        line=dict(color="#f59e0b"),
+                    ))
+                    radar.update_layout(
+                        title="Player DNA",
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                        showlegend=False,
+                        height=360,
+                        margin=dict(l=10, r=10, t=50, b=10),
+                    )
+                    st.plotly_chart(radar, use_container_width=True)
+                else:
+                    st.info("Not enough percentile data to draw the player DNA chart.")
+            else:
+                st.info("Not enough percentile data to draw the player DNA chart.")
+        else:
+            st.info("Percentile context is needed to build the player DNA chart.")
+
+    try:
+        season_id = str(adv.iloc[-1].get("SEASON_ID", ""))
+        season_start = int(season_id[:4])
+    except Exception:
+        season_start = None
+
+    if season_start:
+        league_df = get_balldontlie_league_season_averages(season_start)
+    else:
+        league_df = pd.DataFrame()
+
+    if league_df is not None and not league_df.empty:
+        scatter = league_df.copy()
+        scatter["USG"] = pd.to_numeric(scatter.get("usg_pct"), errors="coerce") * 100.0
+        scatter["TS"] = pd.to_numeric(scatter.get("ts_pct"), errors="coerce") * 100.0
+        scatter["PPG"] = pd.to_numeric(scatter.get("pts"), errors="coerce")
+        scatter["Position Family"] = scatter["POSITION"].apply(_position_family_label)
+        scatter = scatter.dropna(subset=["USG", "TS", "PPG"])
+        scatter = scatter[scatter["PPG"] >= 8].copy()
+
+        latest_name = str(player_name).lower()
+        player_row = scatter[scatter["PLAYER_NAME"].astype(str).str.lower() == latest_name].copy()
+
+        if not scatter.empty:
+            fig = px.scatter(
+                scatter,
+                x="USG",
+                y="TS",
+                size="PPG",
+                color="Position Family",
+                hover_name="PLAYER_NAME",
+                title="League Context: Usage vs Efficiency",
+                labels={"USG": "USG%", "TS": "TS%"},
+                opacity=0.45,
+            )
+            if not player_row.empty:
+                fig.add_trace(go.Scatter(
+                    x=player_row["USG"],
+                    y=player_row["TS"],
+                    mode="markers+text",
+                    text=[player_name],
+                    textposition="top center",
+                    marker=dict(size=18, color="#f59e0b", line=dict(color="white", width=1.5)),
+                    name=player_name,
+                ))
+            fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
+            st.plotly_chart(fig, use_container_width=True)
         return
 
     if games.empty:
@@ -284,6 +533,7 @@ def stats_tab(player, model):
 
         latest_season_id = str(adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in adv.columns else ""
         percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, adv)
+        _render_player_storytelling_dashboard(player["full_name"], adv, percentile_df)
         if not percentile_df.empty:
             st.markdown("### 📈 Percentile & Ranking Context")
             st.caption("Latest-season context versus the league distribution from balldontlie season averages.")
@@ -351,6 +601,8 @@ def stats_tab(player, model):
                 percent_cols=["TS%", "3P%", "USG%"],
                 max_height_px=360,
             )
+
+        _render_stat_explainer()
     if adv is not None and not adv.empty and model:
         st.markdown("### 🧠 AI Career Phases")
 
@@ -379,7 +631,8 @@ def stats_tab(player, model):
                         phases = validate_phase_output(phases, seasons)
                         st.session_state["career_phases"] = phases
                     except Exception as e:
-                        st.error(f"Phase detection error: {e}")
+                        st.warning(_friendly_ai_error_message(e))
+                        st.caption(f"Details: {type(e).__name__}")
 
             phases = st.session_state.get("career_phases")
             if phases:
@@ -446,8 +699,12 @@ def stats_tab(player, model):
                     f"Note: Some advanced metrics are estimates from team-context formulas."
                 )
                 with st.spinner("Analyzing…"):
-                    resp = model.generate_content(prompt, generation_config={"max_output_tokens": 3072, "temperature": 0.7})
-                    st.markdown("### 🧠 AI Analysis")
-                    st.write(resp.text if hasattr(resp, "text") else "No response.")
+                    try:
+                        resp = model.generate_content(prompt, generation_config={"max_output_tokens": 3072, "temperature": 0.7})
+                        st.markdown("### 🧠 AI Analysis")
+                        st.write(resp.text if hasattr(resp, "text") else "No response.")
+                    except Exception as e:
+                        st.warning(_friendly_ai_error_message(e))
+                        st.caption(f"Details: {type(e).__name__}")
         else:
             st.info("Add your Gemini API key to enable AI analysis.")

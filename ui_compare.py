@@ -26,6 +26,15 @@ from datetime import datetime
 # -------------------------
 # Small helpers
 # -------------------------
+def _friendly_ai_error_message(error: Exception) -> str:
+    text = str(error or "").lower()
+    if any(term in text for term in ["quota", "resourceexhausted", "resource exhausted", "rate limit", "429"]):
+        return "AI is temporarily unavailable because the current Gemini quota has been reached. Please try again a little later."
+    if any(term in text for term in ["api key", "permission", "unauthorized", "403"]):
+        return "AI is unavailable right now because the Gemini connection or permissions need attention."
+    return "AI is unavailable right now. Please try again in a moment."
+
+
 def render_html_table(
     df,
     *,
@@ -507,6 +516,108 @@ def _build_multi_aligned_df(player_frames: list[dict], stat: str, align_mode: st
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
+def _safe_mean(df: pd.DataFrame, col: str) -> float | None:
+    if col not in df.columns:
+        return None
+    series = pd.to_numeric(df[col], errors="coerce")
+    if series.dropna().empty:
+        return None
+    return float(series.mean())
+
+
+def _safe_pct(num: float | None, den: float | None) -> float | None:
+    if num is None or den is None or den == 0:
+        return None
+    return (num / den) * 100.0
+
+
+def _h2h_matchup_insights(h2h: pd.DataFrame, p1: str, p2: str) -> dict:
+    if h2h is None or h2h.empty:
+        return {}
+
+    p1_pts = _safe_mean(h2h, "PTS_P1")
+    p2_pts = _safe_mean(h2h, "PTS_P2")
+    p1_reb = _safe_mean(h2h, "REB_P1")
+    p2_reb = _safe_mean(h2h, "REB_P2")
+    p1_ast = _safe_mean(h2h, "AST_P1")
+    p2_ast = _safe_mean(h2h, "AST_P2")
+    p1_blk = _safe_mean(h2h, "BLK_P1")
+    p2_blk = _safe_mean(h2h, "BLK_P2")
+    p1_stl = _safe_mean(h2h, "STL_P1")
+    p2_stl = _safe_mean(h2h, "STL_P2")
+    p1_tov = _safe_mean(h2h, "TOV_P1")
+    p2_tov = _safe_mean(h2h, "TOV_P2")
+
+    p1_fgm = _safe_mean(h2h, "FGM_P1")
+    p2_fgm = _safe_mean(h2h, "FGM_P2")
+    p1_fga = _safe_mean(h2h, "FGA_P1")
+    p2_fga = _safe_mean(h2h, "FGA_P2")
+    p1_fg3m = _safe_mean(h2h, "FG3M_P1")
+    p2_fg3m = _safe_mean(h2h, "FG3M_P2")
+    p1_fg3a = _safe_mean(h2h, "FG3A_P1")
+    p2_fg3a = _safe_mean(h2h, "FG3A_P2")
+    p1_ftm = _safe_mean(h2h, "FTM_P1")
+    p2_ftm = _safe_mean(h2h, "FTM_P2")
+    p1_fta = _safe_mean(h2h, "FTA_P1")
+    p2_fta = _safe_mean(h2h, "FTA_P2")
+
+    p1_fg = _safe_pct(p1_fgm, p1_fga)
+    p2_fg = _safe_pct(p2_fgm, p2_fga)
+    p1_3p = _safe_pct(p1_fg3m, p1_fg3a)
+    p2_3p = _safe_pct(p2_fg3m, p2_fg3a)
+    p1_ft = _safe_pct(p1_ftm, p1_fta)
+    p2_ft = _safe_pct(p2_ftm, p2_fta)
+
+    p1_ts = _safe_pct(p1_pts, 2 * ((p1_fga or 0) + 0.44 * (p1_fta or 0)))
+    p2_ts = _safe_pct(p2_pts, 2 * ((p2_fga or 0) + 0.44 * (p2_fta or 0)))
+
+    categories = []
+
+    def add_edge(label: str, v1: float | None, v2: float | None, higher_is_better: bool = True, fmt: str = "{:.1f}"):
+        if v1 is None or v2 is None:
+            return
+        diff = v1 - v2
+        if not higher_is_better:
+            diff = -diff
+        if abs(diff) < 1e-9:
+            winner = "Even"
+            detail = f"Both are basically even in {label.lower()}."
+        else:
+            winner = p1 if diff > 0 else p2
+            display_gap = (v1 - v2) if higher_is_better else (v2 - v1)
+            detail = f"{winner} has the edge in {label.lower()} ({fmt.format(v1)} vs {fmt.format(v2)})."
+            if not higher_is_better:
+                detail = f"{winner} protects the ball better in {label.lower()} ({fmt.format(v1)} vs {fmt.format(v2)} turnovers)."
+        categories.append({"Category": label, "Winner": winner, "Detail": detail})
+
+    add_edge("Scoring", p1_pts, p2_pts)
+    add_edge("Rebounding", p1_reb, p2_reb)
+    add_edge("Playmaking", p1_ast, p2_ast)
+    add_edge("Efficiency", p1_ts, p2_ts, fmt="{:.1f}%")
+    add_edge("Rim Protection", p1_blk, p2_blk)
+    add_edge("Disruption", p1_stl, p2_stl)
+    add_edge("Ball Security", p1_tov, p2_tov, higher_is_better=False)
+
+    sorted_edges = [c for c in categories if c["Winner"] != "Even"]
+    summary = []
+    if sorted_edges:
+        summary.append(sorted_edges[0]["Detail"])
+    if len(sorted_edges) > 1:
+        summary.append(sorted_edges[1]["Detail"])
+    if p1_fg is not None and p2_fg is not None:
+        fg_winner = p1 if p1_fg > p2_fg else p2
+        summary.append(f"{fg_winner} has the better field-goal mark in these matchups ({p1_fg:.1f}% vs {p2_fg:.1f}%).")
+
+    return {
+        "edges": categories,
+        "summary": summary[:3],
+        "snapshot": {
+            p1: {"PTS": p1_pts, "REB": p1_reb, "AST": p1_ast, "TS%": p1_ts, "FG%": p1_fg, "3P%": p1_3p, "FT%": p1_ft},
+            p2: {"PTS": p2_pts, "REB": p2_reb, "AST": p2_ast, "TS%": p2_ts, "FG%": p2_fg, "3P%": p2_3p, "FT%": p2_ft},
+        },
+    }
+
+
 # -------------------------
 # Main render function
 # -------------------------
@@ -543,6 +654,7 @@ def render_compare_tab(primary_player: dict, model=None):
 
     compare_pool = _dedupe_players([primary_player] + st.session_state["compare_players"])[:5]
     st.caption("Compare up to 5 players. Head-to-head stays available when exactly 2 players are selected.")
+    st.info("Share this comparison by copying the browser URL. The selected players and active compare view stay in the link.")
 
     if len(compare_pool) < 2:
         st.info("Add at least one more player to start the comparison.")
@@ -782,6 +894,7 @@ def render_compare_tab(primary_player: dict, model=None):
             else:
                 p1 = pf1["name"]
                 p2 = pf2["name"]
+                insights = _h2h_matchup_insights(h2h, p1, p2)
                 def _avg(col):
                     return float(pd.to_numeric(h2h[col], errors="coerce").mean()) if col in h2h.columns else None
                 colA, colB, colC = st.columns(3)
@@ -796,6 +909,36 @@ def render_compare_tab(primary_player: dict, model=None):
                         p1_pts = round(_avg("PTS_P1") or 0, 1)
                         p2_pts = round(_avg("PTS_P2") or 0, 1)
                         st.metric("PPG (H2H)", f"{p1_pts} vs {p2_pts}", delta=f"{(p1_pts - p2_pts):+.1f}")
+
+                if insights:
+                    st.markdown("### Matchup Insights")
+                    summary = insights.get("summary", [])
+                    if summary:
+                        for line in summary:
+                            st.write(f"- {line}")
+
+                    edge_df = pd.DataFrame(insights.get("edges", []))
+                    if not edge_df.empty:
+                        render_html_table(
+                            edge_df[["Category", "Winner", "Detail"]],
+                            max_height_px=260,
+                        )
+
+                    snapshot = insights.get("snapshot", {})
+                    if snapshot:
+                        snap_rows = []
+                        for player_name, stats in snapshot.items():
+                            row = {"Player": player_name}
+                            row.update(stats)
+                            snap_rows.append(row)
+                        snapshot_df = pd.DataFrame(snap_rows)
+                        render_html_table(
+                            snapshot_df,
+                            number_cols=["PTS", "REB", "AST"],
+                            percent_cols=["TS%", "FG%", "3P%", "FT%"],
+                            max_height_px=220,
+                        )
+
                 chart_keys = ["PTS","REB","AST","STL","BLK","TOV"]
                 plot_df = pd.DataFrame({
                     "Stat": chart_keys,
@@ -878,6 +1021,7 @@ def render_compare_tab(primary_player: dict, model=None):
                         st.markdown("### 🧠 AI Analysis")
                         st.write(resp.text if hasattr(resp, "text") else "No response.")
                     except Exception as e:
-                        st.error(f"AI error: {e}")
+                        st.warning(_friendly_ai_error_message(e))
+                        st.caption(f"Details: {type(e).__name__}")
         else:
             st.info("Add your Gemini API key to enable AI analysis.")

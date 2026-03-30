@@ -1,6 +1,9 @@
 # nba_app/metrics.py
+import json
+import re
 import numpy as np
 import pandas as pd
+import streamlit as st
 from fetch import get_team_totals_many, get_balldontlie_league_season_averages
 
 # ---------------------------
@@ -1155,3 +1158,363 @@ def find_similar_players(player_name: str, season_id: str, adv_df: pd.DataFrame,
         reasons.append(", ".join([label for _, label in diffs[:3]]) if diffs else "overall statistical profile")
     out["Why Similar"] = reasons
     return out.reset_index(drop=True)
+
+
+_NL_METRIC_DEFS = {
+    "scoring": {"league_col": "pts", "rank_col": "pts_rank", "label": "PPG", "weight": 1.0},
+    "rebounding": {"league_col": "reb", "rank_col": "reb_rank", "label": "RPG", "weight": 0.9},
+    "playmaking": {"league_col": "ast_pct", "rank_col": "ast_pct_rank", "label": "AST%", "weight": 1.0},
+    "rim_protection": {"league_col": "blk", "rank_col": "blk_rank", "label": "BLK/G", "weight": 1.1},
+    "steals": {"league_col": "stl", "rank_col": "stl_rank", "label": "STL/G", "weight": 0.8},
+    "efficiency": {"league_col": "ts_pct", "rank_col": "ts_pct_rank", "label": "TS%", "weight": 1.0},
+    "shooting": {"league_col": "fg3_pct", "rank_col": "fg3_pct_rank", "label": "3P%", "weight": 0.9},
+    "three_point_volume": {"league_col": "fg3a", "rank_col": "fg3a_rank", "label": "3PA/G", "weight": 0.8},
+    "usage": {"league_col": "usg_pct", "rank_col": "usg_pct_rank", "label": "USG%", "weight": 0.9},
+    "ball_security": {"league_col": "ast_to", "rank_col": "ast_to_rank", "label": "AST/TO", "weight": 0.7},
+}
+
+_NL_UNSUPPORTED_HINTS = {
+    "young": "age filters",
+    "rookie": "age / experience filters",
+    "older": "age filters",
+    "veteran": "age / experience filters",
+    "improving": "multi-season trend filters",
+    "declining": "multi-season trend filters",
+    "playoff": "playoff-only filters",
+    "clutch": "clutch splits",
+}
+
+
+def _extract_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", cleaned, flags=re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _position_family(pos: str) -> str:
+    pos = str(pos or "").upper()
+    if "C" in pos:
+        return "big"
+    if "G" in pos and "F" not in pos:
+        return "guard"
+    if "F" in pos:
+        return "wing"
+    return "other"
+
+
+def _fallback_nl_query_parse(query: str) -> dict:
+    q = str(query or "").lower()
+    metric_aliases = {
+        "scoring": ["score", "scorer", "points", "ppg", "bucket"],
+        "rebounding": ["rebound", "glass", "boards", "rpg"],
+        "playmaking": ["playmaking", "passing", "creator", "create", "assist", "ast"],
+        "rim_protection": ["rim protection", "rim-protection", "shot blocking", "shot-blocking", "blocks", "blocker", "blk"],
+        "steals": ["steals", "stl", "disruption", "disruptive"],
+        "efficiency": ["efficient", "efficiency", "true shooting", "ts%", "ts", "efg", "eFG"],
+        "shooting": ["shooter", "shooting", "three-point", "3-point", "3pt", "3p%", "spacing"],
+        "three_point_volume": ["3pa", "three-point volume", "high-volume shooting", "high volume shooting", "volume from deep"],
+        "usage": ["usage", "offensive load", "heliocentric"],
+        "ball_security": ["turnover", "ball security", "assist-to-turnover", "ast/to"],
+    }
+
+    metrics = [key for key, aliases in metric_aliases.items() if any(alias in q for alias in aliases)]
+    if not metrics:
+        metrics = ["scoring", "efficiency"]
+
+    position_family = None
+    if any(term in q for term in ["big", "bigs", "center", "centers", "frontcourt", "frontcourt player"]):
+        position_family = "big"
+    elif any(term in q for term in ["guard", "guards", "backcourt"]):
+        position_family = "guard"
+    elif any(term in q for term in ["wing", "wings", "forward", "forwards"]):
+        position_family = "wing"
+
+    min_percentile = 85 if any(term in q for term in ["elite", "best", "top", "high-end"]) else 75 if any(term in q for term in ["great", "strong"]) else 65 if any(term in q for term in ["good", "solid"]) else None
+    unsupported = [label for term, label in _NL_UNSUPPORTED_HINTS.items() if term in q]
+
+    return {
+        "position_family": position_family,
+        "metric_keys": metrics[:4],
+        "min_percentile": min_percentile,
+        "unsupported_terms": unsupported,
+        "force_center": False,
+        "summary": "Latest-season player search from plain English.",
+    }
+
+
+def _apply_nl_query_overrides(query: str, parsed: dict) -> dict:
+    q = str(query or "").lower().strip()
+    out = dict(parsed or {})
+
+    if any(term in q for term in ["3 and d", "3-and-d", "3&d", "3nd", "3 n d"]):
+        out["position_family"] = "wing"
+        out["metric_keys"] = ["shooting", "three_point_volume", "steals"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 75)
+        out["summary"] = "Searching for wing-sized 3-and-D profiles."
+
+    if any(term in q for term in ["stretch 5", "stretch five", "stretch-five"]):
+        out["position_family"] = "big"
+        out["force_center"] = True
+        out["metric_keys"] = ["shooting", "three_point_volume", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 70)
+        out["summary"] = "Searching for center-sized stretch-five profiles."
+
+    if any(term in q for term in ["heliocentric guard", "offensive engine guard", "main offensive engine guard"]):
+        out["position_family"] = "guard"
+        out["metric_keys"] = ["usage", "playmaking", "scoring", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 78)
+        out["summary"] = "Searching for guard offensive engines with scoring and creation load."
+
+    if any(term in q for term in ["rim-running big", "rim runner", "rim-running center", "rim running big"]):
+        out["position_family"] = "big"
+        out["force_center"] = True
+        out["metric_keys"] = ["efficiency", "rebounding", "rim_protection"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 72)
+        out["summary"] = "Searching for rim-running bigs who finish, rebound, and protect the rim."
+
+    if any(term in q for term in ["shot-creating wing", "shot creator wing", "scoring wing", "shot creating wing"]):
+        out["position_family"] = "wing"
+        out["metric_keys"] = ["scoring", "usage", "playmaking", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 75)
+        out["summary"] = "Searching for wing scorers who can create offense."
+
+    if any(term in q for term in ["point center", "point-centre", "point centre", "offensive hub big", "playmaking center"]):
+        out["position_family"] = "big"
+        out["force_center"] = True
+        out["metric_keys"] = ["playmaking", "rebounding", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 75)
+        out["summary"] = "Searching for centers who function like offensive hubs."
+
+    if any(term in q for term in ["floor-spacing big", "floor spacing big", "spacing big", "stretch big"]):
+        out["position_family"] = "big"
+        out["metric_keys"] = ["shooting", "three_point_volume", "efficiency"]
+        out["min_percentile"] = max(int(out.get("min_percentile") or 0), 70)
+        out["summary"] = "Searching for bigs who stretch the floor with real shooting value."
+
+    return out
+
+
+def _ai_parse_nl_query(query: str, model=None) -> dict | None:
+    if model is None:
+        return None
+    prompt = (
+        "Convert this NBA player search into compact JSON for a latest-season stat finder.\n"
+        "Allowed position_family values: big, wing, guard, null.\n"
+        "Allowed metric_keys values: scoring, rebounding, playmaking, rim_protection, steals, efficiency, shooting, three_point_volume, usage, ball_security.\n"
+        "Return JSON only with keys: position_family, metric_keys, min_percentile, unsupported_terms, summary.\n"
+        "If the user asks for trends, age, rookies, playoffs, or clutch, include that in unsupported_terms.\n"
+        f"Query: {query}"
+    )
+    try:
+        resp = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.1,
+                "max_output_tokens": 220,
+                "response_mime_type": "application/json",
+            },
+        )
+        parsed = _extract_json_object(getattr(resp, "text", "") or "")
+        if not parsed:
+            return None
+        parsed["metric_keys"] = [m for m in parsed.get("metric_keys", []) if m in _NL_METRIC_DEFS]
+        if not parsed.get("metric_keys"):
+            parsed["metric_keys"] = ["scoring", "efficiency"]
+        if parsed.get("position_family") not in {"big", "wing", "guard", None}:
+            parsed["position_family"] = None
+        return parsed
+    except Exception:
+        return None
+
+
+def _metric_percentile_from_row(row: pd.Series, league_df: pd.DataFrame, metric_key: str) -> float | None:
+    metric = _NL_METRIC_DEFS[metric_key]
+    total = int(league_df["PLAYER_ID"].nunique()) if "PLAYER_ID" in league_df.columns else int(len(league_df))
+    rank_val = pd.to_numeric(row.get(metric["rank_col"]), errors="coerce")
+    if pd.notna(rank_val) and total > 1:
+        rank_int = int(rank_val)
+        return round(((total - rank_int) / max(total - 1, 1)) * 100.0, 1)
+
+    series = pd.to_numeric(league_df.get(metric["league_col"]), errors="coerce")
+    value = pd.to_numeric(row.get(metric["league_col"]), errors="coerce")
+    if pd.isna(value) or series.dropna().empty:
+        return None
+    return round(float((series <= value).mean() * 100.0), 1)
+
+
+def _metric_is_eligible(row: pd.Series, metric_key: str) -> bool:
+    pts = pd.to_numeric(row.get("pts"), errors="coerce")
+    reb = pd.to_numeric(row.get("reb"), errors="coerce")
+    ast = pd.to_numeric(row.get("ast"), errors="coerce")
+    blk = pd.to_numeric(row.get("blk"), errors="coerce")
+    stl = pd.to_numeric(row.get("stl"), errors="coerce")
+    gp = pd.to_numeric(row.get("gp"), errors="coerce")
+    mpg = pd.to_numeric(row.get("min"), errors="coerce")
+    fg3a = pd.to_numeric(row.get("fg3a"), errors="coerce")
+    usg = pd.to_numeric(row.get("usg_pct"), errors="coerce")
+    ast_pct = pd.to_numeric(row.get("ast_pct"), errors="coerce")
+
+    if metric_key == "shooting":
+        return pd.notna(fg3a) and fg3a >= 3.5
+    if metric_key == "three_point_volume":
+        return pd.notna(fg3a) and fg3a >= 4.0
+    if metric_key == "efficiency":
+        return ((pd.notna(pts) and pts >= 12) or (pd.notna(usg) and usg >= 0.18)) and ((pd.notna(mpg) and mpg >= 18) or (pd.notna(gp) and gp >= 20))
+    if metric_key == "rim_protection":
+        return pd.notna(blk) and blk >= 0.8 and pd.notna(mpg) and mpg >= 18
+    if metric_key == "steals":
+        return pd.notna(stl) and stl >= 0.8 and pd.notna(mpg) and mpg >= 18
+    if metric_key == "playmaking":
+        return (pd.notna(ast) and ast >= 3.0) or (pd.notna(ast_pct) and ast_pct >= 0.18)
+    if metric_key == "rebounding":
+        return (pd.notna(reb) and reb >= 5.0) or (pd.notna(mpg) and mpg >= 20)
+    if metric_key == "scoring":
+        return pd.notna(pts) and pts >= 10
+    if metric_key == "usage":
+        return pd.notna(usg) and usg >= 0.18
+    if metric_key == "ball_security":
+        return (pd.notna(ast) and ast >= 3.0) or (pd.notna(ast_pct) and ast_pct >= 0.18)
+    return True
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def find_players_by_natural_language(query: str, season: int | None, limit: int, use_model: bool, _model=None) -> tuple[pd.DataFrame, dict]:
+    if not query or not str(query).strip():
+        return pd.DataFrame(), {"message": "Enter a plain-English prompt to search the latest-season player pool."}
+
+    if season is None:
+        now = pd.Timestamp.now(tz="America/New_York")
+        season = int(now.year if now.month >= 10 else now.year - 1)
+
+    league_df = get_balldontlie_league_season_averages(int(season))
+    if league_df is None or league_df.empty:
+        return pd.DataFrame(), {"message": "League season data could not be loaded right now."}
+
+    parsed = _ai_parse_nl_query(query, _model if use_model else None) or _fallback_nl_query_parse(query)
+    parsed = _apply_nl_query_overrides(query, parsed)
+    metric_keys = parsed.get("metric_keys") or ["scoring", "efficiency"]
+    position_family = parsed.get("position_family")
+    min_percentile = parsed.get("min_percentile")
+    force_center = bool(parsed.get("force_center"))
+
+    comp = league_df.copy()
+    if "gp" in comp.columns:
+        comp = comp[pd.to_numeric(comp["gp"], errors="coerce") >= 12].copy()
+    if "min" in comp.columns:
+        comp = comp[pd.to_numeric(comp["min"], errors="coerce") >= 12].copy()
+    if position_family:
+        comp = comp[comp["POSITION"].apply(_position_family) == position_family].copy()
+    if force_center:
+        comp = comp[comp["POSITION"].astype(str).str.upper().str.contains("C", na=False)].copy()
+    if comp.empty:
+        return pd.DataFrame(), {
+            "message": "No players matched that position filter in the latest-season pool.",
+            "summary": parsed.get("summary", ""),
+            "unsupported_terms": parsed.get("unsupported_terms", []),
+        }
+
+    strict = comp.copy()
+    if min_percentile is not None:
+        for metric_key in metric_keys:
+            strict = strict[strict.apply(lambda row: _metric_is_eligible(row, metric_key), axis=1)].copy()
+            if strict.empty:
+                break
+            strict = strict[
+                strict.apply(
+                    lambda row: (_metric_percentile_from_row(row, comp, metric_key) or 0) >= float(min_percentile),
+                    axis=1,
+                )
+            ].copy()
+            if strict.empty:
+                break
+
+    candidates = strict if not strict.empty else comp.copy()
+    scores = []
+    reasons = []
+    for _, row in candidates.iterrows():
+        weighted = 0.0
+        weight_total = 0.0
+        row_reasons = []
+        for metric_key in metric_keys:
+            if not _metric_is_eligible(row, metric_key):
+                continue
+            pct = _metric_percentile_from_row(row, comp, metric_key)
+            if pct is None:
+                continue
+            metric = _NL_METRIC_DEFS[metric_key]
+            weight = metric["weight"]
+            if metric_key == "shooting":
+                fg3a = pd.to_numeric(row.get("fg3a"), errors="coerce")
+                volume_bonus = min(max((float(fg3a) - 3.5) / 4.5, 0.0), 1.0) if pd.notna(fg3a) else 0.0
+                pct = pct * (0.75 + 0.25 * volume_bonus)
+            elif metric_key == "efficiency":
+                pts = pd.to_numeric(row.get("pts"), errors="coerce")
+                usg = pd.to_numeric(row.get("usg_pct"), errors="coerce")
+                load_bonus = max(
+                    min(((float(pts) - 12.0) / 18.0), 1.0) if pd.notna(pts) else 0.0,
+                    min(((float(usg) - 0.18) / 0.14), 1.0) if pd.notna(usg) else 0.0,
+                )
+                pct = pct * (0.8 + 0.2 * max(load_bonus, 0.0))
+            weighted += pct * weight
+            weight_total += weight
+            if pct >= 80:
+                row_reasons.append(f"{metric['label']} ({pct:.0f}th percentile)")
+        score = (weighted / weight_total) if weight_total else 0.0
+        scores.append(score)
+        reasons.append(", ".join(row_reasons[:3]) if row_reasons else "overall profile fit")
+
+    candidates = candidates.copy()
+    candidates["Match Score"] = scores
+    candidates["Why It Matched"] = reasons
+    candidates = candidates[candidates["Match Score"] > 0].copy()
+    candidates = candidates.sort_values("Match Score", ascending=False).head(limit).copy()
+    if candidates.empty:
+        return pd.DataFrame(), {
+            "message": "No players matched that search right now.",
+            "summary": parsed.get("summary", ""),
+            "unsupported_terms": parsed.get("unsupported_terms", []),
+        }
+
+    out = pd.DataFrame({
+        "Player": candidates["PLAYER_NAME"],
+        "Position": candidates["POSITION"],
+        "Match": candidates["Match Score"].round(1),
+        "PPG": pd.to_numeric(candidates.get("pts"), errors="coerce").round(1),
+        "RPG": pd.to_numeric(candidates.get("reb"), errors="coerce").round(1),
+        "APG": pd.to_numeric(candidates.get("ast"), errors="coerce").round(1),
+        "TS%": (pd.to_numeric(candidates.get("ts_pct"), errors="coerce") * 100.0).round(1),
+        "3P%": (pd.to_numeric(candidates.get("fg3_pct"), errors="coerce") * 100.0).round(1),
+        "BLK/G": pd.to_numeric(candidates.get("blk"), errors="coerce").round(1),
+        "STL/G": pd.to_numeric(candidates.get("stl"), errors="coerce").round(1),
+        "USG%": (pd.to_numeric(candidates.get("usg_pct"), errors="coerce") * 100.0).round(1),
+        "Why It Matched": candidates["Why It Matched"],
+        "Player Token": candidates["PLAYER_ID"].apply(lambda x: f"balldontlie:{int(x)}" if pd.notna(x) else None),
+    })
+
+    meta = {
+        "message": "",
+        "summary": parsed.get("summary", "Latest-season player search from plain English."),
+        "unsupported_terms": parsed.get("unsupported_terms", []),
+        "used_position_filter": position_family,
+        "metric_labels": [_NL_METRIC_DEFS[key]["label"] for key in metric_keys],
+        "strict_match_count": int(len(strict)) if min_percentile is not None else int(len(candidates)),
+        "relaxed": bool(min_percentile is not None and strict.empty),
+        "season": season,
+    }
+    return out.reset_index(drop=True), meta
