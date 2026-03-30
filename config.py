@@ -18,9 +18,17 @@ LOCAL_BALLDONTLIE_API_KEY = ""
 def _load_key(secret_names: list[str], env_names: list[str], local_fallback: str = ""):
     key = None
 
-    if hasattr(st, "secrets"):
+    try:
+        secrets_obj = st.secrets
+    except Exception:
+        secrets_obj = None
+
+    if secrets_obj is not None:
         for name in secret_names:
-            key = st.secrets.get(name)
+            try:
+                key = secrets_obj.get(name)
+            except Exception:
+                key = None
             if key:
                 return key
 

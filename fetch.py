@@ -864,7 +864,10 @@ def save_watchlist_tokens(tokens: list[str]) -> None:
 def get_watchlist_players() -> list[dict]:
     players = []
     for token in load_watchlist_tokens():
-        player = player_from_share_token(token)
+        try:
+            player = player_from_share_token(token)
+        except Exception:
+            player = None
         if player:
             players.append(player)
     return players
