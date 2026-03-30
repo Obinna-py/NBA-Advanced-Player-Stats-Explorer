@@ -1,7 +1,11 @@
 # nba_app/config.py
 import os
 import streamlit as st
-import google.generativeai as genai
+
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
 def ensure_page_config():
     st.set_page_config(page_title="NBA Advanced Player Stats Explorer", layout="wide")
@@ -37,15 +41,18 @@ BALLDONTLIE_API_KEY = _load_key(
     ["BALLDONTLIE_API_KEY"],
     LOCAL_BALLDONTLIE_API_KEY,
 )
+AI_SETUP_ERROR = None
 
 if _API_KEY:
     try:
+        if genai is None:
+            raise ImportError("google-generativeai is not installed in this environment.")
         genai.configure(api_key=_API_KEY)
         model = genai.GenerativeModel("models/gemini-2.5-flash")
         AI_ENABLED = True
     except Exception as e:
         # If something goes wrong configuring the SDK, disable AI gracefully
-        st.warning(f"Gemini setup error: {e}")
+        AI_SETUP_ERROR = str(e)
         model = None
         AI_ENABLED = False
 else:

@@ -83,6 +83,23 @@ def _sync_share_state_to_url() -> None:
         for key, value in payload.items():
             st.query_params[key] = value
 
+# session state
+for key, default in [
+    ("matches", []),
+    ("player", None),
+    ("search_feedback", None),
+    ("compare_players", []),
+    ("nl_results", None),
+    ("nl_meta", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+if "active_view" not in st.session_state:
+    st.session_state["active_view"] = "📋 Player Info"
+
+_load_share_state_from_url()
+
 with st.sidebar:
     st.header("🔍 Search Player")
     name = st.text_input("Enter an NBA player's name")
@@ -164,23 +181,6 @@ with st.sidebar:
         else:
             st.warning("balldontlie looks slow or unavailable right now.")
             st.caption(f"{balldontlie_health.get('error_type', 'Error')}: {balldontlie_health.get('message', 'Unknown error')}")
-
-# session state
-for key, default in [
-    ("matches", []),
-    ("player", None),
-    ("search_feedback", None),
-    ("compare_players", []),
-    ("nl_results", None),
-    ("nl_meta", None),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-if "active_view" not in st.session_state:
-    st.session_state["active_view"] = "📋 Player Info"
-
-_load_share_state_from_url()
 
 if search_clicked:
     try:

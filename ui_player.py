@@ -199,6 +199,14 @@ def balldontlie_games_tab(player):
     except Exception as e:
         st.warning("Could not load team games from balldontlie right now.")
         st.caption(f"{type(e).__name__}: {e}")
+        return
+
+    if games.empty:
+        st.info("No recent team games were returned.")
+        return
+
+    st.write(f"**Team:** {player.get('team_name') or player.get('team_abbreviation') or '—'}")
+    st.dataframe(games, use_container_width=True, hide_index=True)
 
 
 def _position_family_label(position: str) -> str:
@@ -367,14 +375,6 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                 ))
             fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig, use_container_width=True)
-        return
-
-    if games.empty:
-        st.info("No recent team games were returned.")
-        return
-
-    st.write(f"**Team:** {player.get('team_name') or player.get('team_abbreviation') or '—'}")
-    st.dataframe(games, use_container_width=True, hide_index=True)
 
 def validate_phase_output(phases: dict, seasons_available: list[str]) -> dict:
     """
