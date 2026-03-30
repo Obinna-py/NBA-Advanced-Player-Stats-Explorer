@@ -1,6 +1,6 @@
 # nba_app/app.py
 import streamlit as st
-from config import ensure_page_config, model
+from config import ensure_page_config, model, AI_SETUP_ERROR
 try:
     from streamlit_searchbox import st_searchbox
 except Exception:
@@ -21,6 +21,10 @@ from ui_player import info_tab, stats_tab
 from ui_compare import render_compare_tab
 
 ensure_page_config()
+
+if AI_SETUP_ERROR:
+    st.warning("AI is not fully configured in this deployment right now.")
+    st.caption(f"Setup details: {AI_SETUP_ERROR}")
 
 
 _VIEW_TO_TOKEN = {

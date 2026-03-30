@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
-from config import ai_generate_text
+from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
 from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
@@ -833,4 +833,8 @@ def stats_tab(player, model):
                         st.warning(_friendly_ai_error_message(e))
                         st.caption(f"Details: {type(e).__name__}")
         else:
-            st.info("Add your OpenAI API key to enable AI analysis.")
+            if AI_SETUP_ERROR:
+                st.info("AI is unavailable in this deployment right now.")
+                st.caption(f"Setup details: {AI_SETUP_ERROR}")
+            else:
+                st.info("Add your OpenAI API key to enable AI analysis.")

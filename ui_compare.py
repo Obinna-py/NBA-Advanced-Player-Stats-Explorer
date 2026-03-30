@@ -6,7 +6,7 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 import json
-from config import ai_generate_text
+from config import ai_generate_text, AI_SETUP_ERROR
 try:
     from streamlit_searchbox import st_searchbox
 except Exception:
@@ -1599,4 +1599,8 @@ def render_compare_tab(primary_player: dict, model=None):
                         st.warning(_friendly_ai_error_message(e))
                         st.caption(f"Details: {type(e).__name__}")
         else:
-            st.info("Add your OpenAI API key to enable AI analysis.")
+            if AI_SETUP_ERROR:
+                st.info("AI is unavailable in this deployment right now.")
+                st.caption(f"Setup details: {AI_SETUP_ERROR}")
+            else:
+                st.info("Add your OpenAI API key to enable AI analysis.")
