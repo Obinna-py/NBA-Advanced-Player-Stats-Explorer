@@ -448,28 +448,98 @@ def validate_phase_output(phases: dict, seasons_available: list[str]) -> dict:
     return phases
 
 
-def stats_tab(player, model):
-    st.subheader("Most Recent Season Stats")
+def _player_phase_state_key(player: dict) -> str:
+    return f"{player.get('source', 'nba_api')}:{player.get('id')}"
 
-    speed_mode = st.toggle(
-        "Compute advanced for ALL seasons (slower)",
-        value=False,
-        help="Off = latest season only (fast). On = all seasons (slower)."
-    )
+
+def _weighted_average(df: pd.DataFrame, col: str, weights: pd.Series) -> float | None:
+    if col not in df.columns:
+        return None
+    values = pd.to_numeric(df[col], errors="coerce")
+    valid = values.notna() & weights.notna() & (weights > 0)
+    if not valid.any():
+        return None
+    return float(np.average(values[valid], weights=weights[valid]))
+
+
+def _summarize_stat_slice(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series(dtype="float64")
+
+    weights = pd.to_numeric(df.get("GP"), errors="coerce") if "GP" in df.columns else pd.Series(1.0, index=df.index)
+    weights = weights.fillna(1.0)
+
+    summary = {
+        "PPG": _weighted_average(df, "PPG", weights),
+        "RPG": _weighted_average(df, "RPG", weights),
+        "APG": _weighted_average(df, "APG", weights),
+        "TS%": _weighted_average(df, "TS%", weights),
+    }
+    return pd.Series(summary)
+
+
+def _build_summary_view_options(player: dict, adv: pd.DataFrame) -> tuple[dict[str, dict], dict[str, str]]:
+    options = {}
+    captions = {}
+    if adv is None or adv.empty:
+        return options, captions
+
+    latest_df = adv.tail(1).copy()
+    options["Latest Season"] = {
+        "summary": latest_df.iloc[-1],
+        "table_df": latest_df,
+    }
+    latest_season = str(adv.iloc[-1].get("SEASON_ID", "latest season"))
+    captions["Latest Season"] = f"Using the player's latest available season ({latest_season})."
+
+    options["Full Career"] = {
+        "summary": _summarize_stat_slice(adv),
+        "table_df": adv.copy(),
+    }
+    captions["Full Career"] = "Showing the player's full career, with the headline cards using a games-weighted average."
+
+    phase_store = st.session_state.get("career_phases_by_player", {})
+    phases = phase_store.get(_player_phase_state_key(player))
+    if not phases:
+        return options, captions
+
+    phase_labels = [
+        ("Early Career", phases.get("early", [])),
+        ("Prime", phases.get("prime", [])),
+        ("Late Career", phases.get("late", [])),
+    ]
+    for label, season_list in phase_labels:
+        season_list = [str(s) for s in season_list if s]
+        if not season_list:
+            continue
+        subset = adv[adv["SEASON_ID"].astype(str).isin(season_list)].copy() if "SEASON_ID" in adv.columns else pd.DataFrame()
+        if subset.empty:
+            continue
+        options[label] = {
+            "summary": _summarize_stat_slice(subset),
+            "table_df": subset,
+        }
+        captions[label] = f"Showing these seasons: {', '.join(season_list)}. The headline cards use a games-weighted average for that window."
+
+    return options, captions
+
+
+def stats_tab(player, model):
+    st.subheader("Player Stats")
 
     raw_pergame = get_player_career(
         player['id'],
         per_mode='PerGame',
         player_name=player.get("full_name"),
         player_source=player.get("source"),
-        all_seasons=speed_mode,
+        all_seasons=True,
     )
     raw_totals = get_player_career(
         player['id'],
         per_mode='Totals',
         player_name=player.get("full_name"),
         player_source=player.get("source"),
-        all_seasons=speed_mode,
+        all_seasons=True,
     )
 
     if raw_pergame.empty and raw_totals.empty:
@@ -491,21 +561,53 @@ def stats_tab(player, model):
         if raw_totals.attrs.get("provider") == "balldontlie":
             adv = raw_totals.copy()
         else:
-            if speed_mode:
-                adv_source = raw_totals
-            else:
-                latest_season = raw_totals['SEASON_ID'].iloc[-1]
-                adv_source = raw_totals[raw_totals['SEASON_ID'] == latest_season].copy()
             with st.spinner("Computing advanced metrics…"):
-                adv = compute_full_advanced_stats(adv_source)
+                adv = compute_full_advanced_stats(raw_totals)
     else:
         adv = pd.DataFrame()
     
     adv = add_per_game_columns(adv, raw_pergame)
 
+    full_adv = adv
+
+    phase_player_key = _player_phase_state_key(player)
+    phase_store = st.session_state.setdefault("career_phases_by_player", {})
+    if model and phase_player_key not in phase_store and full_adv is not None and not full_adv.empty:
+        phase_df = build_ai_phase_table(full_adv)
+        seasons = phase_df["Season"].dropna().astype(str).tolist() if "Season" in phase_df.columns else []
+        if seasons:
+            phase_table_text = phase_df.to_csv(index=False)
+            try:
+                with st.spinner("Preparing career phases…"):
+                    phases = ai_detect_career_phases(
+                        player["full_name"],
+                        phase_table_text,
+                        use_model=True,
+                        _model=model,
+                    )
+                phases = validate_phase_output(phases, seasons)
+                phase_store[phase_player_key] = phases
+            except Exception:
+                pass
+
+    summary_source = full_adv if full_adv is not None and not full_adv.empty else adv
+    summary_views, summary_captions = _build_summary_view_options(player, summary_source)
+    selected_summary_label = None
+    selected_summary = None
+    display_adv = adv
+    if summary_views:
+        selected_summary_label = st.selectbox(
+            "Summary view",
+            list(summary_views.keys()),
+            index=0,
+            key=f"summary_view_{_player_phase_state_key(player)}",
+        )
+        selected_summary = summary_views[selected_summary_label]["summary"]
+        display_adv = summary_views[selected_summary_label]["table_df"]
+
     latest_src = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
     if latest_src is not None and not latest_src.empty:
-        latest = latest_src.iloc[-1]
+        latest = selected_summary if selected_summary is not None else latest_src.iloc[-1]
         headshot_url = get_nba_headshot_url(
             player["id"],
             player_name=player.get("full_name"),
@@ -517,18 +619,22 @@ def stats_tab(player, model):
                 st.image(headshot_url, width=170)
             st.caption(player.get("full_name", ""))
         with stats_col:
+            if selected_summary_label and selected_summary_label in summary_captions:
+                st.caption(summary_captions[selected_summary_label])
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("PPG", f"{latest.get('PTS', np.nan):.1f}")
-            m2.metric("RPG", f"{latest.get('REB', np.nan):.1f}")
-            m3.metric("APG", f"{latest.get('AST', np.nan):.1f}")
-            ts_val = adv.iloc[-1]['TS%'] if not adv.empty and 'TS%' in adv.columns else np.nan
+            ppg_val = pd.to_numeric(latest.get("PPG", latest.get("PTS", np.nan)), errors="coerce")
+            rpg_val = pd.to_numeric(latest.get("RPG", latest.get("REB", np.nan)), errors="coerce")
+            apg_val = pd.to_numeric(latest.get("APG", latest.get("AST", np.nan)), errors="coerce")
+            m1.metric("PPG", f"{ppg_val:.1f}" if pd.notna(ppg_val) else "—")
+            m2.metric("RPG", f"{rpg_val:.1f}" if pd.notna(rpg_val) else "—")
+            m3.metric("APG", f"{apg_val:.1f}" if pd.notna(apg_val) else "—")
+            ts_val = latest.get('TS%', np.nan)
             ts_num = pd.to_numeric(ts_val, errors="coerce")
             m4.metric("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—")
 
 
-    if adv is not None and not adv.empty:
-        cols = public_cols(adv)
-        stats_df, number_cols, percent_cols = _make_readable_stats_table(adv)
+    if display_adv is not None and not display_adv.empty:
+        stats_df, number_cols, percent_cols = _make_readable_stats_table(display_adv)
 
         render_html_table(
             stats_df,
@@ -537,15 +643,9 @@ def stats_tab(player, model):
             max_height_px=520
         )
 
-        if not speed_mode:
-            st.info(
-                "Showing the latest season view. "
-                "Turn on “ALL seasons” above to load the full career when available."
-            )
-
-        latest_season_id = str(adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in adv.columns else ""
-        percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, adv)
-        _render_player_storytelling_dashboard(player["full_name"], adv, percentile_df)
+        latest_season_id = str(display_adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in display_adv.columns else ""
+        percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, display_adv)
+        _render_player_storytelling_dashboard(player["full_name"], display_adv, percentile_df)
         if not percentile_df.empty:
             st.markdown("### 📈 Percentile & Ranking Context")
             st.caption("Latest-season context versus the league distribution from balldontlie season averages.")
@@ -574,7 +674,7 @@ def stats_tab(player, model):
                 max_height_px=360,
             )
 
-        archetype = detect_player_archetype(player["full_name"], adv, percentile_df)
+        archetype = detect_player_archetype(player["full_name"], display_adv, percentile_df)
         if archetype:
             st.markdown("### 🧩 Role Archetype")
             c1, c2 = st.columns([1.4, 1])
@@ -609,7 +709,7 @@ def stats_tab(player, model):
                         max_height_px=260,
                     )
 
-        similar_df = find_similar_players(player["full_name"], latest_season_id, adv, limit=6)
+        similar_df = find_similar_players(player["full_name"], latest_season_id, display_adv, limit=6)
         if not similar_df.empty:
             st.markdown("### 🧬 Similar Player Finder")
             st.caption("Closest latest-season statistical matches from the league-wide balldontlie season-average pool.")
@@ -626,10 +726,10 @@ def stats_tab(player, model):
             )
 
         _render_stat_explainer()
-    if adv is not None and not adv.empty and model:
+    if full_adv is not None and not full_adv.empty and model:
         st.markdown("### 🧠 AI Career Phases")
 
-        phase_df = build_ai_phase_table(adv)
+        phase_df = build_ai_phase_table(full_adv if full_adv is not None and not full_adv.empty else adv)
         seasons = phase_df["Season"].dropna().astype(str).tolist() if "Season" in phase_df.columns else []
 
         if not seasons:
@@ -652,12 +752,15 @@ def stats_tab(player, model):
                             _model=model,
                         )
                         phases = validate_phase_output(phases, seasons)
+                        phase_store = st.session_state.setdefault("career_phases_by_player", {})
+                        phase_store[_player_phase_state_key(player)] = phases
                         st.session_state["career_phases"] = phases
                     except Exception as e:
                         st.warning(_friendly_ai_error_message(e))
                         st.caption(f"Details: {type(e).__name__}")
 
-            phases = st.session_state.get("career_phases")
+            phase_store = st.session_state.get("career_phases_by_player", {})
+            phases = phase_store.get(_player_phase_state_key(player)) or st.session_state.get("career_phases")
             if phases:
                 st.success(
                     f"Peak season: **{phases['peak_season']}** • Confidence: **{phases['confidence']:.2f}**"

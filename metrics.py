@@ -1125,6 +1125,18 @@ def find_similar_players(player_name: str, season_id: str, adv_df: pd.DataFrame,
         "dreb_pct": (pd.to_numeric(latest.get("DRB%"), errors="coerce") / 100.0) if "DRB%" in latest.index else np.nan,
         "ast_to": pd.to_numeric(latest.get("AST/TO"), errors="coerce"),
     }
+    target_height = pd.to_numeric(latest.get("HEIGHT_IN"), errors="coerce") if "HEIGHT_IN" in latest.index else np.nan
+    target_weight = pd.to_numeric(latest.get("WEIGHT_LBS"), errors="coerce") if "WEIGHT_LBS" in latest.index else np.nan
+    if pd.isna(target_height):
+        position = str(latest.get("POSITION", latest.get("Pos", "")) or "").upper()
+        if "C" in position:
+            target_height = 83.0
+        elif "F" in position and "G" not in position:
+            target_height = 80.0
+        elif "G" in position and "F" in position:
+            target_height = 79.0
+        elif "G" in position:
+            target_height = 76.0
 
     feature_weights = {
         "pts": 1.2,
@@ -1212,6 +1224,24 @@ def find_similar_players(player_name: str, season_id: str, adv_df: pd.DataFrame,
         exact_penalty = np.where(comp_position == position, 0.0, 0.08)
         comp["similarity_distance"] = comp["similarity_distance"] + family_penalty + exact_penalty
 
+        if target_family == "big":
+            comp = comp[candidate_family == "big"].copy()
+        elif target_family == "guard":
+            comp = comp[candidate_family == "guard"].copy()
+        elif target_family == "wing":
+            comp = comp[candidate_family.isin(["wing", "guard"])].copy()
+
+    if "HEIGHT_IN" in comp.columns and pd.notna(target_height):
+        comp_height = pd.to_numeric(comp["HEIGHT_IN"], errors="coerce")
+        height_gap = (comp_height - float(target_height)).abs()
+        comp = comp[height_gap.fillna(99) <= 6].copy()
+        comp["similarity_distance"] = comp["similarity_distance"] + (height_gap.fillna(0) * 0.08)
+
+    if "WEIGHT_LBS" in comp.columns and pd.notna(target_weight):
+        comp_weight = pd.to_numeric(comp["WEIGHT_LBS"], errors="coerce")
+        weight_gap = (comp_weight - float(target_weight)).abs()
+        comp["similarity_distance"] = comp["similarity_distance"] + (weight_gap.fillna(0) / 45.0) * 0.12
+
     comp = comp.sort_values("similarity_distance").head(limit).copy()
     if comp.empty:
         return pd.DataFrame()
@@ -1229,6 +1259,8 @@ def find_similar_players(player_name: str, season_id: str, adv_df: pd.DataFrame,
         "TS%": (pd.to_numeric(comp.get("ts_pct"), errors="coerce") * 100.0).round(1),
         "3P%": (pd.to_numeric(comp.get("fg3_pct"), errors="coerce") * 100.0).round(1),
         "USG%": (pd.to_numeric(comp.get("usg_pct"), errors="coerce") * 100.0).round(1),
+        "Height": comp.get("HEIGHT"),
+        "Weight": comp.get("WEIGHT"),
     })
 
     reason_cols = ["pts", "reb", "ast", "ts_pct", "usg_pct", "blk", "fg3a"]
@@ -1616,6 +1648,15 @@ def find_players_by_natural_language(query: str, season: int | None, limit: int,
         comp = comp[pd.to_numeric(comp.get("fg3_pct"), errors="coerce") >= float(min_fg3_pct)].copy()
     if min_fg3a is not None:
         comp = comp[pd.to_numeric(comp.get("fg3a"), errors="coerce") >= float(min_fg3a)].copy()
+
+    if position_family == "big" and "HEIGHT_IN" in comp.columns:
+        comp = comp[pd.to_numeric(comp["HEIGHT_IN"], errors="coerce") >= 80].copy()
+    elif position_family == "guard" and "HEIGHT_IN" in comp.columns:
+        comp = comp[pd.to_numeric(comp["HEIGHT_IN"], errors="coerce") <= 79].copy()
+    elif position_family == "wing" and "HEIGHT_IN" in comp.columns:
+        heights = pd.to_numeric(comp["HEIGHT_IN"], errors="coerce")
+        comp = comp[heights.between(77, 82, inclusive="both")].copy()
+
     if comp.empty:
         return pd.DataFrame(), {
             "message": "No players matched that position filter in the latest-season pool.",
