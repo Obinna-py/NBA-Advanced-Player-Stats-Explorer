@@ -759,3 +759,399 @@ def compute_player_percentile_context(player_name: str, season_id: str, adv_df: 
     out["__order"] = out["Category"].map(sort_order).fillna(99)
     out = out.sort_values(["__order", "Percentile"], ascending=[True, False]).drop(columns="__order")
     return out.reset_index(drop=True)
+
+
+def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_df: pd.DataFrame | None = None) -> dict:
+    """
+    Rules-based archetype detection using latest-season production and percentile context.
+    Returns a primary archetype, optional secondary archetype, confidence, and stat evidence.
+    """
+    if adv_df is None or adv_df.empty:
+        return {}
+
+    latest = adv_df.iloc[-1]
+    percentile_df = percentile_df if isinstance(percentile_df, pd.DataFrame) else pd.DataFrame()
+
+    def num(key, default=np.nan):
+        return pd.to_numeric(latest.get(key), errors="coerce") if key in latest.index else default
+
+    def pct(metric: str, default=50.0):
+        if percentile_df.empty or "Metric" not in percentile_df.columns:
+            return default
+        rows = percentile_df[percentile_df["Metric"] == metric]
+        if rows.empty:
+            return default
+        return pd.to_numeric(rows.iloc[0]["Percentile"], errors="coerce")
+
+    position = str(latest.get("POSITION", latest.get("Pos", "")) or "").upper()
+    gp = num("GP")
+
+    def per_game(preferred: str, total: str):
+        preferred_val = num(preferred)
+        if pd.notna(preferred_val):
+            return preferred_val
+        total_val = num(total)
+        if pd.notna(total_val) and pd.notna(gp) and gp > 0:
+            return total_val / gp
+        return np.nan
+
+    ppg = per_game("PPG", "PTS")
+    rpg = per_game("RPG", "REB")
+    apg = per_game("APG", "AST")
+    spg = per_game("SPG", "STL")
+    bpg = per_game("BPG", "BLK")
+    ts = num("TS%")
+    efg = num("EFG%")
+    usg = num("USG% (true)")
+    ast_pct = num("AST%")
+    trb_pct = num("TRB%")
+    orb_pct = num("ORB%")
+    drb_pct = num("DRB%")
+    three_pa = num("3PA/G")
+    three_pct = num("3P%")
+    ft_rate = num("FTr")
+
+    archetypes = {
+        "Heliocentric Creator": {"score": 0, "evidence": []},
+        "Point Center / Offensive Hub": {"score": 0, "evidence": []},
+        "Stretch Big": {"score": 0, "evidence": []},
+        "Rim-Protecting Big": {"score": 0, "evidence": []},
+        "Two-Way Wing": {"score": 0, "evidence": []},
+        "Three-Level Scorer": {"score": 0, "evidence": []},
+        "Interior Finisher": {"score": 0, "evidence": []},
+        "Secondary Playmaker": {"score": 0, "evidence": []},
+        "Shot-Creating Wing": {"score": 0, "evidence": []},
+        "3-and-D Wing": {"score": 0, "evidence": []},
+        "Combo Guard Scorer": {"score": 0, "evidence": []},
+        "Floor-Spacing Big": {"score": 0, "evidence": []},
+        "Rim-Running Big": {"score": 0, "evidence": []},
+        "Glass-Cleaning Big": {"score": 0, "evidence": []},
+    }
+
+    def boost(name: str, amount: float, reason: str):
+        archetypes[name]["score"] += amount
+        archetypes[name]["evidence"].append(reason)
+
+    if pd.notna(usg) and usg >= 28:
+        boost("Heliocentric Creator", 2.0, f"High usage load ({usg:.1f}%).")
+        boost("Three-Level Scorer", 1.0, f"Carries real scoring volume ({usg:.1f}% usage).")
+        boost("Shot-Creating Wing", 0.8, f"Offense runs through self-created volume ({usg:.1f}% usage).")
+        boost("Combo Guard Scorer", 0.8, f"Carries a major scoring burden ({usg:.1f}% usage).")
+    if pd.notna(ast_pct) and ast_pct >= 30:
+        boost("Heliocentric Creator", 2.5, f"Elite playmaking share ({ast_pct:.1f} AST%).")
+        boost("Point Center / Offensive Hub", 2.0, f"Runs offense through creation ({ast_pct:.1f} AST%).")
+        boost("Secondary Playmaker", 0.8, f"Strong table-setting profile ({ast_pct:.1f} AST%).")
+    if pd.notna(apg) and apg >= 7:
+        boost("Heliocentric Creator", 1.8, f"Top-tier passing volume ({apg:.1f} APG).")
+        boost("Combo Guard Scorer", 0.8, f"Guard-like creation burden ({apg:.1f} APG).")
+    elif pd.notna(apg) and apg >= 4.5:
+        boost("Secondary Playmaker", 1.8, f"Meaningful creation role ({apg:.1f} APG).")
+
+    if "C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7):
+        boost("Point Center / Offensive Hub", 0.8, "Big-man positional profile.")
+        boost("Stretch Big", 0.8, "Frontcourt size/role profile.")
+        boost("Rim-Protecting Big", 0.8, "Frontcourt defensive role.")
+        boost("Interior Finisher", 0.8, "Frontcourt interior role.")
+        boost("Floor-Spacing Big", 0.5, "Frontcourt profile with spacing upside.")
+        boost("Rim-Running Big", 0.5, "Frontcourt interior finisher profile.")
+        boost("Glass-Cleaning Big", 0.5, "Frontcourt rebounding profile.")
+
+    if pd.notna(three_pa) and three_pa >= 4.5 and pd.notna(three_pct) and three_pct >= 34:
+        boost("Stretch Big", 2.0, f"Real floor-spacing volume ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
+        boost("Three-Level Scorer", 1.3, f"Strong perimeter scoring profile ({three_pa:.1f} 3PA/G).")
+        boost("Floor-Spacing Big", 2.2, f"Big-man shooting gravity ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
+        boost("3-and-D Wing", 1.0, f"High-volume catch-and-shoot threat ({three_pa:.1f} 3PA/G).")
+        boost("Shot-Creating Wing", 0.8, f"Perimeter volume supports shot-creation role ({three_pa:.1f} 3PA/G).")
+
+    if pd.notna(bpg) and bpg >= 2.0:
+        boost("Rim-Protecting Big", 2.8, f"High rim protection output ({bpg:.1f} BLK/G).")
+        boost("Two-Way Wing", 0.8, f"Impact shot blocking ({bpg:.1f} BLK/G).")
+        boost("3-and-D Wing", 0.6, f"Strong defensive event production ({bpg:.1f} BLK/G).")
+    elif pd.notna(bpg) and bpg >= 1.0:
+        boost("Rim-Protecting Big", 1.4, f"Solid rim protection ({bpg:.1f} BLK/G).")
+
+    if pd.notna(trb_pct) and trb_pct >= 15:
+        boost("Rim-Protecting Big", 1.2, f"Strong rebounding share ({trb_pct:.1f} TRB%).")
+        boost("Point Center / Offensive Hub", 1.0, f"Controls possessions on the glass ({trb_pct:.1f} TRB%).")
+        boost("Glass-Cleaning Big", 2.2, f"Dominates the glass ({trb_pct:.1f} TRB%).")
+    if pd.notna(orb_pct) and orb_pct >= 8:
+        boost("Interior Finisher", 1.8, f"Creates extra possessions inside ({orb_pct:.1f} ORB%).")
+        boost("Rim-Running Big", 1.8, f"Pressure on the rim shows up on the offensive glass ({orb_pct:.1f} ORB%).")
+    if pd.notna(ts) and ts >= 60:
+        boost("Interior Finisher", 1.4, f"Finishes efficiently ({ts:.1f} TS%).")
+        boost("Three-Level Scorer", 1.2, f"Scoring efficiency is strong ({ts:.1f} TS%).")
+        boost("Rim-Running Big", 1.2, f"High-efficiency finishing profile ({ts:.1f} TS%).")
+    if pd.notna(ppg) and ppg >= 24:
+        boost("Three-Level Scorer", 2.0, f"High scoring volume ({ppg:.1f} PPG).")
+        boost("Shot-Creating Wing", 1.6, f"Produces star-level wing scoring volume ({ppg:.1f} PPG).")
+        boost("Combo Guard Scorer", 1.6, f"Produces star-level guard scoring volume ({ppg:.1f} PPG).")
+    elif pd.notna(ppg) and ppg >= 18:
+        boost("Three-Level Scorer", 1.0, f"Reliable scoring role ({ppg:.1f} PPG).")
+
+    if pd.notna(spg) and spg >= 1.2 and pd.notna(bpg) and bpg >= 0.8:
+        boost("Two-Way Wing", 2.0, f"Stocks profile supports two-way impact ({spg:.1f} STL, {bpg:.1f} BLK).")
+        boost("3-and-D Wing", 1.8, f"Defensive playmaking supports 3-and-D role ({spg:.1f} STL, {bpg:.1f} BLK).")
+    if pd.notna(three_pa) and three_pa >= 5 and pd.notna(three_pct) and three_pct >= 35:
+        boost("Two-Way Wing", 1.0, f"Adds real perimeter spacing ({three_pa:.1f} 3PA/G).")
+        boost("3-and-D Wing", 1.8, f"Volume plus accuracy from deep fits 3-and-D mold ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
+
+    if pd.notna(ast_pct) and ast_pct >= 20 and pd.notna(usg) and usg < 28:
+        boost("Secondary Playmaker", 1.4, f"Creates offense without extreme usage ({ast_pct:.1f} AST%, {usg:.1f} USG%).")
+        boost("Shot-Creating Wing", 0.8, f"Can bend the defense and create for others ({ast_pct:.1f} AST%).")
+        boost("Combo Guard Scorer", 0.8, f"Can score and create without carrying the full offense ({ast_pct:.1f} AST%).")
+    if pd.notna(ft_rate) and ft_rate >= 0.28:
+        boost("Interior Finisher", 0.8, f"Gets to the line at a healthy rate ({ft_rate:.2f} FTr).")
+        boost("Three-Level Scorer", 0.5, f"Pressure on defenses shows up in foul drawing ({ft_rate:.2f} FTr).")
+        boost("Shot-Creating Wing", 0.8, f"Creates contact and rim pressure ({ft_rate:.2f} FTr).")
+        boost("Combo Guard Scorer", 0.8, f"Attacks enough to draw fouls ({ft_rate:.2f} FTr).")
+
+    if pct("APG") >= 95 or pct("AST%") >= 95:
+        boost("Heliocentric Creator", 1.0, f"League-elite playmaking percentile ({max(pct('APG'), pct('AST%')):.1f}).")
+        boost("Point Center / Offensive Hub", 0.8, f"Rare passing for role ({max(pct('APG'), pct('AST%')):.1f} percentile).")
+    if pct("RPG") >= 95 or pct("TRB%") >= 95:
+        boost("Rim-Protecting Big", 0.8, f"Elite glass work ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
+        boost("Point Center / Offensive Hub", 0.6, f"Owns the glass ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
+        boost("Glass-Cleaning Big", 1.2, f"Elite rebounding percentile ({max(pct('RPG'), pct('TRB%')):.1f}).")
+    if pct("BLK/G") >= 95:
+        boost("Rim-Protecting Big", 1.0, f"Elite shot-blocking percentile ({pct('BLK/G'):.1f}).")
+        boost("3-and-D Wing", 0.5, f"Rare defensive event percentile ({pct('BLK/G'):.1f}).")
+    if pct("TS%") >= 90 and pct("PPG") >= 90:
+        boost("Three-Level Scorer", 1.0, f"Combines scoring volume and efficiency at elite percentile levels.")
+        boost("Shot-Creating Wing", 0.8, "Looks like a top-end scoring engine by efficiency and volume.")
+        boost("Combo Guard Scorer", 0.8, "Looks like a top-end scoring guard by efficiency and volume.")
+
+    if "G" in position and pd.notna(apg) and apg >= 5 and pd.notna(ppg) and ppg >= 18:
+        boost("Combo Guard Scorer", 1.6, f"Blends scoring and guard creation ({ppg:.1f} PPG, {apg:.1f} APG).")
+    if ("F" in position or "G" in position) and pd.notna(ppg) and ppg >= 20 and pd.notna(three_pa) and three_pa >= 4:
+        boost("Shot-Creating Wing", 1.6, f"Wing-sized shot creation with perimeter volume ({ppg:.1f} PPG, {three_pa:.1f} 3PA/G).")
+    if ("F" in position or "G" in position) and pd.notna(three_pa) and three_pa >= 5 and pd.notna(spg) and spg >= 1.0:
+        boost("3-and-D Wing", 1.2, f"Spacing plus event defense profile ({three_pa:.1f} 3PA/G, {spg:.1f} STL/G).")
+    if "C" in position and pd.notna(three_pa) and three_pa >= 3.5:
+        boost("Floor-Spacing Big", 1.6, f"Center who stretches defenses ({three_pa:.1f} 3PA/G).")
+    if "C" in position and pd.notna(orb_pct) and orb_pct >= 9 and pd.notna(ts) and ts >= 58:
+        boost("Rim-Running Big", 1.8, f"Rim pressure and efficient interior finishing ({orb_pct:.1f} ORB%, {ts:.1f} TS%).")
+
+    archetype_descriptions = {
+        "Heliocentric Creator": "The offense runs through this player as the main scorer and creator.",
+        "Point Center / Offensive Hub": "A big who acts like an offensive engine through passing, touches, and decision-making.",
+        "Stretch Big": "A frontcourt player who adds real three-point volume and scoring gravity.",
+        "Floor-Spacing Big": "A big whose main offensive value includes pulling defenders out with shooting.",
+        "Rim-Protecting Big": "A big whose defensive identity is built around shot blocking and interior coverage.",
+        "Glass-Cleaning Big": "A frontcourt player who wins possessions with elite rebounding.",
+        "Rim-Running Big": "A big who pressures the rim, finishes efficiently, and creates value inside.",
+        "Two-Way Wing": "A wing who contributes on both ends with scoring utility and defensive activity.",
+        "3-and-D Wing": "A wing whose value comes from perimeter shooting plus disruptive defense.",
+        "Shot-Creating Wing": "A wing who can generate offense for himself and punish defenses with scoring volume.",
+        "Three-Level Scorer": "A player who can put up points efficiently across different areas of the floor.",
+        "Interior Finisher": "A player whose scoring comes heavily from pressure at the rim and efficient inside finishing.",
+        "Secondary Playmaker": "A player who may not run the whole offense but still creates a meaningful amount for teammates.",
+        "Combo Guard Scorer": "A scoring guard who can both create shots and handle a solid share of playmaking.",
+    }
+
+    ranked = sorted(
+        [{"name": name, **payload} for name, payload in archetypes.items()],
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+    primary = ranked[0]
+    secondary = ranked[1] if len(ranked) > 1 and ranked[1]["score"] >= 2.5 else None
+
+    confidence = min(0.95, max(0.45, 0.45 + (primary["score"] / 10.0)))
+    return {
+        "player_name": player_name,
+        "primary": primary["name"],
+        "secondary": secondary["name"] if secondary else None,
+        "primary_description": archetype_descriptions.get(primary["name"], ""),
+        "secondary_description": archetype_descriptions.get(secondary["name"], "") if secondary else None,
+        "confidence": round(confidence, 2),
+        "evidence": primary["evidence"][:4],
+        "style_scores": [
+            {"Archetype": item["name"], "Score": round(item["score"], 2)}
+            for item in ranked if item["score"] > 0
+        ],
+    }
+
+
+def find_similar_players(player_name: str, season_id: str, adv_df: pd.DataFrame, limit: int = 6) -> pd.DataFrame:
+    """
+    Find statistically similar players for the latest season using league-wide balldontlie season averages.
+    Returns a compact table with a similarity score and a few anchor metrics.
+    """
+    if adv_df is None or adv_df.empty or not season_id:
+        return pd.DataFrame()
+
+    try:
+        season_start = int(str(season_id)[:4])
+    except Exception:
+        return pd.DataFrame()
+
+    league_df = get_balldontlie_league_season_averages(season_start)
+    if league_df is None or league_df.empty:
+        return pd.DataFrame()
+
+    latest = adv_df.iloc[-1]
+    gp = pd.to_numeric(latest.get("GP"), errors="coerce")
+
+    def latest_per_game(preferred: str, total: str):
+        preferred_val = pd.to_numeric(latest.get(preferred), errors="coerce") if preferred in latest.index else np.nan
+        if pd.notna(preferred_val):
+            return preferred_val
+        total_val = pd.to_numeric(latest.get(total), errors="coerce") if total in latest.index else np.nan
+        if pd.notna(total_val) and pd.notna(gp) and gp > 0:
+            return total_val / gp
+        return np.nan
+
+    target = {
+        "pts": latest_per_game("PPG", "PTS"),
+        "reb": latest_per_game("RPG", "REB"),
+        "ast": latest_per_game("APG", "AST"),
+        "stl": latest_per_game("SPG", "STL"),
+        "blk": latest_per_game("BPG", "BLK"),
+        "fg3a": pd.to_numeric(latest.get("3PA/G"), errors="coerce"),
+        "fg3_pct": (pd.to_numeric(latest.get("3P%"), errors="coerce") / 100.0) if "3P%" in latest.index else np.nan,
+        "ts_pct": (pd.to_numeric(latest.get("TS%"), errors="coerce") / 100.0) if "TS%" in latest.index else np.nan,
+        "usg_pct": (pd.to_numeric(latest.get("USG% (true)"), errors="coerce") / 100.0) if "USG% (true)" in latest.index else np.nan,
+        "ast_pct": (pd.to_numeric(latest.get("AST%"), errors="coerce") / 100.0) if "AST%" in latest.index else np.nan,
+        "reb_pct": (pd.to_numeric(latest.get("TRB%"), errors="coerce") / 100.0) if "TRB%" in latest.index else np.nan,
+        "oreb_pct": (pd.to_numeric(latest.get("ORB%"), errors="coerce") / 100.0) if "ORB%" in latest.index else np.nan,
+        "dreb_pct": (pd.to_numeric(latest.get("DRB%"), errors="coerce") / 100.0) if "DRB%" in latest.index else np.nan,
+        "ast_to": pd.to_numeric(latest.get("AST/TO"), errors="coerce"),
+    }
+
+    feature_weights = {
+        "pts": 1.2,
+        "reb": 1.0,
+        "ast": 1.0,
+        "stl": 0.7,
+        "blk": 0.9,
+        "fg3a": 0.9,
+        "fg3_pct": 0.8,
+        "ts_pct": 1.0,
+        "usg_pct": 1.1,
+        "ast_pct": 1.0,
+        "reb_pct": 0.8,
+        "oreb_pct": 0.6,
+        "dreb_pct": 0.6,
+        "ast_to": 0.7,
+    }
+
+    feature_cols = [c for c in feature_weights if c in league_df.columns]
+    usable_features = [c for c in feature_cols if pd.notna(target.get(c))]
+    if len(usable_features) < 5:
+        return pd.DataFrame()
+
+    comp = league_df.copy()
+    comp = comp[comp["PLAYER_NAME"].astype(str).str.lower() != str(player_name).lower()].copy()
+    if comp.empty:
+        return pd.DataFrame()
+
+    min_gp = max(15, int(gp * 0.4)) if pd.notna(gp) and gp > 0 else 15
+    if "gp" in comp.columns:
+        comp = comp[pd.to_numeric(comp["gp"], errors="coerce") >= min_gp].copy()
+    if comp.empty:
+        return pd.DataFrame()
+
+    def zscore(series: pd.Series) -> pd.Series:
+        vals = pd.to_numeric(series, errors="coerce")
+        std = vals.std(ddof=0)
+        if pd.isna(std) or std == 0:
+            return pd.Series(0.0, index=series.index)
+        return (vals - vals.mean()) / std
+
+    z_cols = {}
+    for col in usable_features:
+        z = zscore(comp[col])
+        z_cols[col] = z
+        comp[f"{col}__z"] = z
+
+    target_z = {}
+    for col in usable_features:
+        vals = pd.to_numeric(comp[col], errors="coerce")
+        std = vals.std(ddof=0)
+        mean = vals.mean()
+        if pd.isna(std) or std == 0:
+            target_z[col] = 0.0
+        else:
+            target_z[col] = (float(target[col]) - mean) / std
+
+    distance = np.zeros(len(comp), dtype=float)
+    for col in usable_features:
+        weight = feature_weights[col]
+        distance += weight * np.square(comp[f"{col}__z"] - target_z[col])
+    comp["similarity_distance"] = np.sqrt(distance)
+
+    position = str(latest.get("POSITION", latest.get("Pos", "")) or "").upper()
+    if position:
+        comp_position = comp["POSITION"].astype(str).str.upper()
+
+        def position_family(pos: str) -> str:
+            if "C" in pos:
+                return "big"
+            if "G" in pos and "F" not in pos:
+                return "guard"
+            if "F" in pos:
+                return "wing"
+            return "other"
+
+        target_family = position_family(position)
+        candidate_family = comp_position.apply(position_family)
+        strict_family = comp[candidate_family == target_family].copy()
+        if len(strict_family) >= max(limit + 2, 8):
+            comp = strict_family
+            comp_position = comp["POSITION"].astype(str).str.upper()
+            candidate_family = comp_position.apply(position_family)
+        family_penalty = np.where(candidate_family == target_family, 0.0, 0.55)
+        exact_penalty = np.where(comp_position == position, 0.0, 0.08)
+        comp["similarity_distance"] = comp["similarity_distance"] + family_penalty + exact_penalty
+
+    comp = comp.sort_values("similarity_distance").head(limit).copy()
+    if comp.empty:
+        return pd.DataFrame()
+
+    min_dist = comp["similarity_distance"].min()
+    comp["Similarity"] = (100 - (comp["similarity_distance"] - min_dist) * 18).clip(lower=55, upper=99)
+
+    out = pd.DataFrame({
+        "Player": comp["PLAYER_NAME"],
+        "Position": comp["POSITION"],
+        "Similarity": comp["Similarity"].round(1),
+        "PPG": pd.to_numeric(comp.get("pts"), errors="coerce").round(1),
+        "RPG": pd.to_numeric(comp.get("reb"), errors="coerce").round(1),
+        "APG": pd.to_numeric(comp.get("ast"), errors="coerce").round(1),
+        "TS%": (pd.to_numeric(comp.get("ts_pct"), errors="coerce") * 100.0).round(1),
+        "3P%": (pd.to_numeric(comp.get("fg3_pct"), errors="coerce") * 100.0).round(1),
+        "USG%": (pd.to_numeric(comp.get("usg_pct"), errors="coerce") * 100.0).round(1),
+    })
+
+    reason_cols = ["pts", "reb", "ast", "ts_pct", "usg_pct", "blk", "fg3a"]
+    reasons = []
+    for _, row in comp.iterrows():
+        diffs = []
+        labels = {
+            "pts": "scoring",
+            "reb": "rebounding",
+            "ast": "playmaking",
+            "ts_pct": "efficiency",
+            "usg_pct": "usage",
+            "blk": "rim protection",
+            "fg3a": "three-point volume",
+        }
+        for col in reason_cols:
+            if col not in usable_features:
+                continue
+            league_val = pd.to_numeric(row.get(col), errors="coerce")
+            target_val = pd.to_numeric(target.get(col), errors="coerce")
+            if pd.isna(league_val) or pd.isna(target_val):
+                continue
+            if col == "blk" and float(target_val) < 1.0:
+                continue
+            if col == "fg3a" and float(target_val) < 2.5:
+                continue
+            vals = pd.to_numeric(league_df[col], errors="coerce")
+            std = vals.std(ddof=0)
+            normalized_gap = abs(float(league_val) - float(target_val)) / max(float(std) if pd.notna(std) and std > 0 else 1.0, 1e-6)
+            diffs.append((normalized_gap, labels[col]))
+        diffs.sort(key=lambda x: x[0])
+        reasons.append(", ".join([label for _, label in diffs[:3]]) if diffs else "overall statistical profile")
+    out["Why Similar"] = reasons
+    return out.reset_index(drop=True)

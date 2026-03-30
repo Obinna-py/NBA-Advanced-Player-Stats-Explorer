@@ -5,7 +5,7 @@ import streamlit as st
 from datetime import datetime
 from logos import college_logos
 from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url
-from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context
+from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
 from ui_compare import render_html_table, _make_readable_stats_table
@@ -309,6 +309,46 @@ def stats_tab(player, model):
                 display_df,
                 number_cols=["Value"],
                 percent_cols=["Percentile"],
+                max_height_px=360,
+            )
+
+        archetype = detect_player_archetype(player["full_name"], adv, percentile_df)
+        if archetype:
+            st.markdown("### 🧩 Role Archetype")
+            c1, c2 = st.columns([1.4, 1])
+            with c1:
+                st.metric("Primary Archetype", archetype["primary"])
+                if archetype.get("primary_description"):
+                    st.caption(archetype["primary_description"])
+                if archetype.get("secondary"):
+                    st.caption(f"Secondary archetype: {archetype['secondary']}")
+                    if archetype.get("secondary_description"):
+                        st.caption(archetype["secondary_description"])
+                st.caption(f"Confidence: {archetype['confidence']:.2f}")
+                for line in archetype.get("evidence", []):
+                    st.write(f"- {line}")
+            with c2:
+                scores = pd.DataFrame(archetype.get("style_scores", []))
+                if not scores.empty:
+                    render_html_table(
+                        scores,
+                        number_cols=["Score"],
+                        max_height_px=260,
+                    )
+
+        similar_df = find_similar_players(player["full_name"], latest_season_id, adv, limit=6)
+        if not similar_df.empty:
+            st.markdown("### 🧬 Similar Player Finder")
+            st.caption("Closest latest-season statistical matches from the league-wide balldontlie season-average pool.")
+            top_match = similar_df.iloc[0]
+            st.info(
+                f"Closest match right now: **{top_match['Player']}** "
+                f"({top_match['Similarity']:.1f} similarity) based on {top_match['Why Similar']}."
+            )
+            render_html_table(
+                similar_df,
+                number_cols=["Similarity", "PPG", "RPG", "APG"],
+                percent_cols=["TS%", "3P%", "USG%"],
                 max_height_px=360,
             )
     if adv is not None and not adv.empty and model:
