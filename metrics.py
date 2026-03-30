@@ -817,6 +817,7 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
     archetypes = {
         "Heliocentric Creator": {"score": 0, "evidence": []},
         "Point Center / Offensive Hub": {"score": 0, "evidence": []},
+        "Unicorn Big": {"score": 0, "evidence": []},
         "Stretch Big": {"score": 0, "evidence": []},
         "Rim-Protecting Big": {"score": 0, "evidence": []},
         "Two-Way Wing": {"score": 0, "evidence": []},
@@ -851,6 +852,7 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
         boost("Secondary Playmaker", 1.8, f"Meaningful creation role ({apg:.1f} APG).")
 
     if "C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7):
+        boost("Unicorn Big", 0.8, "Frontcourt size/role profile.")
         boost("Point Center / Offensive Hub", 0.8, "Big-man positional profile.")
         boost("Stretch Big", 0.8, "Frontcourt size/role profile.")
         boost("Rim-Protecting Big", 0.8, "Frontcourt defensive role.")
@@ -860,6 +862,7 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
         boost("Glass-Cleaning Big", 0.5, "Frontcourt rebounding profile.")
 
     if pd.notna(three_pa) and three_pa >= 4.5 and pd.notna(three_pct) and three_pct >= 34:
+        boost("Unicorn Big", 1.6, f"Rare big-man perimeter volume ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
         boost("Stretch Big", 2.0, f"Real floor-spacing volume ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
         boost("Three-Level Scorer", 1.3, f"Strong perimeter scoring profile ({three_pa:.1f} 3PA/G).")
         boost("Floor-Spacing Big", 2.2, f"Big-man shooting gravity ({three_pa:.1f} 3PA/G, {three_pct:.1f}% 3P).")
@@ -867,6 +870,7 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
         boost("Shot-Creating Wing", 0.8, f"Perimeter volume supports shot-creation role ({three_pa:.1f} 3PA/G).")
 
     if pd.notna(bpg) and bpg >= 2.0:
+        boost("Unicorn Big", 1.8, f"Big-man rim protection plus mobility ({bpg:.1f} BLK/G).")
         boost("Rim-Protecting Big", 2.8, f"High rim protection output ({bpg:.1f} BLK/G).")
         boost("Two-Way Wing", 0.8, f"Impact shot blocking ({bpg:.1f} BLK/G).")
         boost("3-and-D Wing", 0.6, f"Strong defensive event production ({bpg:.1f} BLK/G).")
@@ -881,10 +885,12 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
         boost("Interior Finisher", 1.8, f"Creates extra possessions inside ({orb_pct:.1f} ORB%).")
         boost("Rim-Running Big", 1.8, f"Pressure on the rim shows up on the offensive glass ({orb_pct:.1f} ORB%).")
     if pd.notna(ts) and ts >= 60:
+        boost("Unicorn Big", 0.9, f"Pairs unusual skill with real efficiency ({ts:.1f} TS%).")
         boost("Interior Finisher", 1.4, f"Finishes efficiently ({ts:.1f} TS%).")
         boost("Three-Level Scorer", 1.2, f"Scoring efficiency is strong ({ts:.1f} TS%).")
         boost("Rim-Running Big", 1.2, f"High-efficiency finishing profile ({ts:.1f} TS%).")
     if pd.notna(ppg) and ppg >= 24:
+        boost("Unicorn Big", 1.1, f"Star-level scoring from a big profile ({ppg:.1f} PPG).")
         boost("Three-Level Scorer", 2.0, f"High scoring volume ({ppg:.1f} PPG).")
         boost("Shot-Creating Wing", 1.6, f"Produces star-level wing scoring volume ({ppg:.1f} PPG).")
         boost("Combo Guard Scorer", 1.6, f"Produces star-level guard scoring volume ({ppg:.1f} PPG).")
@@ -902,6 +908,8 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
         boost("Secondary Playmaker", 1.4, f"Creates offense without extreme usage ({ast_pct:.1f} AST%, {usg:.1f} USG%).")
         boost("Shot-Creating Wing", 0.8, f"Can bend the defense and create for others ({ast_pct:.1f} AST%).")
         boost("Combo Guard Scorer", 0.8, f"Can score and create without carrying the full offense ({ast_pct:.1f} AST%).")
+    if ("C" in position or "F" in position) and pd.notna(ast_pct) and ast_pct >= 16:
+        boost("Unicorn Big", 1.3, f"Unusual playmaking for a frontcourt player ({ast_pct:.1f} AST%).")
     if pd.notna(ft_rate) and ft_rate >= 0.28:
         boost("Interior Finisher", 0.8, f"Gets to the line at a healthy rate ({ft_rate:.2f} FTr).")
         boost("Three-Level Scorer", 0.5, f"Pressure on defenses shows up in foul drawing ({ft_rate:.2f} FTr).")
@@ -911,14 +919,18 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
     if pct("APG") >= 95 or pct("AST%") >= 95:
         boost("Heliocentric Creator", 1.0, f"League-elite playmaking percentile ({max(pct('APG'), pct('AST%')):.1f}).")
         boost("Point Center / Offensive Hub", 0.8, f"Rare passing for role ({max(pct('APG'), pct('AST%')):.1f} percentile).")
+    if ("C" in position or "F" in position) and (pct("AST%") >= 85 or pct("APG") >= 85):
+        boost("Unicorn Big", 1.0, f"Rare frontcourt playmaking percentile ({max(pct('APG'), pct('AST%')):.1f}).")
     if pct("RPG") >= 95 or pct("TRB%") >= 95:
         boost("Rim-Protecting Big", 0.8, f"Elite glass work ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
         boost("Point Center / Offensive Hub", 0.6, f"Owns the glass ({max(pct('RPG'), pct('TRB%')):.1f} percentile rebounding).")
         boost("Glass-Cleaning Big", 1.2, f"Elite rebounding percentile ({max(pct('RPG'), pct('TRB%')):.1f}).")
     if pct("BLK/G") >= 95:
+        boost("Unicorn Big", 1.0, f"Rare shot-blocking percentile for a skilled frontcourt player ({pct('BLK/G'):.1f}).")
         boost("Rim-Protecting Big", 1.0, f"Elite shot-blocking percentile ({pct('BLK/G'):.1f}).")
         boost("3-and-D Wing", 0.5, f"Rare defensive event percentile ({pct('BLK/G'):.1f}).")
     if pct("TS%") >= 90 and pct("PPG") >= 90:
+        boost("Unicorn Big", 0.8, "Combines big-man size with star scoring efficiency and volume.")
         boost("Three-Level Scorer", 1.0, f"Combines scoring volume and efficiency at elite percentile levels.")
         boost("Shot-Creating Wing", 0.8, "Looks like a top-end scoring engine by efficiency and volume.")
         boost("Combo Guard Scorer", 0.8, "Looks like a top-end scoring guard by efficiency and volume.")
@@ -930,13 +942,17 @@ def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_d
     if ("F" in position or "G" in position) and pd.notna(three_pa) and three_pa >= 5 and pd.notna(spg) and spg >= 1.0:
         boost("3-and-D Wing", 1.2, f"Spacing plus event defense profile ({three_pa:.1f} 3PA/G, {spg:.1f} STL/G).")
     if "C" in position and pd.notna(three_pa) and three_pa >= 3.5:
+        boost("Unicorn Big", 1.0, f"Center-sized player with real floor-spacing volume ({three_pa:.1f} 3PA/G).")
         boost("Floor-Spacing Big", 1.6, f"Center who stretches defenses ({three_pa:.1f} 3PA/G).")
     if "C" in position and pd.notna(orb_pct) and orb_pct >= 9 and pd.notna(ts) and ts >= 58:
         boost("Rim-Running Big", 1.8, f"Rim pressure and efficient interior finishing ({orb_pct:.1f} ORB%, {ts:.1f} TS%).")
+    if ("C" in position or ("F" in position and pd.notna(rpg) and rpg >= 7)) and pd.notna(three_pa) and three_pa >= 3.5 and pd.notna(bpg) and bpg >= 1.5:
+        boost("Unicorn Big", 2.0, f"Blends frontcourt shooting and rim protection in a rare way ({three_pa:.1f} 3PA/G, {bpg:.1f} BLK/G).")
 
     archetype_descriptions = {
         "Heliocentric Creator": "The offense runs through this player as the main scorer and creator.",
         "Point Center / Offensive Hub": "A big who acts like an offensive engine through passing, touches, and decision-making.",
+        "Unicorn Big": "A rare frontcourt player who blends size with perimeter skill, unusual creation, and/or rim protection in a way most bigs cannot.",
         "Stretch Big": "A frontcourt player who adds real three-point volume and scoring gravity.",
         "Floor-Spacing Big": "A big whose main offensive value includes pulling defenders out with shooting.",
         "Rim-Protecting Big": "A big whose defensive identity is built around shot blocking and interior coverage.",
