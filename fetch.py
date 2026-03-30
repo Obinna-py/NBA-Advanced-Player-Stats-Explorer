@@ -573,6 +573,7 @@ def _get_balldontlie_head_to_head_games(
 
     if "GAME_DATE" in merged.columns:
         merged = merged.sort_values("GAME_DATE")
+    merged.attrs["provider"] = "balldontlie"
     return merged
 
 
@@ -963,18 +964,24 @@ def get_head_to_head_games(
     if not seasons:
         return pd.DataFrame()
 
+    balldontlie_attempted = False
     try:
+        balldontlie_attempted = True
         h2h_balldontlie = _get_balldontlie_head_to_head_games(
             p1_id, p2_id, seasons,
             p1_name=p1_name, p2_name=p2_name,
             p1_source=p1_source, p2_source=p2_source,
             season_type=season_type,
         )
-        if h2h_balldontlie is not None and not h2h_balldontlie.empty:
-            h2h_balldontlie.attrs["provider"] = "balldontlie"
+        if h2h_balldontlie is not None:
             return h2h_balldontlie
     except Exception:
         pass
+
+    if balldontlie_attempted:
+        empty = pd.DataFrame()
+        empty.attrs["provider"] = "balldontlie"
+        return empty
 
     g1 = get_player_game_logs_many(p1_id, seasons, season_type=season_type)
     g2 = get_player_game_logs_many(p2_id, seasons, season_type=season_type)
