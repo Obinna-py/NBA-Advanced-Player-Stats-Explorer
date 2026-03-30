@@ -42,6 +42,38 @@ def _ensure_season_start(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _fill_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    for src, dst in [('FG_PCT', 'FG%'), ('FG3_PCT', '3P%'), ('FT_PCT', 'FT%')]:
+        if src in out.columns and dst not in out.columns:
+            out[dst] = pd.to_numeric(out[src], errors='coerce') * 100
+
+    fga = pd.to_numeric(out['FGA'], errors='coerce') if 'FGA' in out.columns else pd.Series(np.nan, index=out.index)
+    fta = pd.to_numeric(out['FTA'], errors='coerce') if 'FTA' in out.columns else pd.Series(np.nan, index=out.index)
+    pts = pd.to_numeric(out['PTS'], errors='coerce') if 'PTS' in out.columns else pd.Series(np.nan, index=out.index)
+    fg3a = pd.to_numeric(out['FG3A'], errors='coerce') if 'FG3A' in out.columns else pd.Series(np.nan, index=out.index)
+    mins = pd.to_numeric(out['MIN'], errors='coerce') if 'MIN' in out.columns else pd.Series(np.nan, index=out.index)
+
+    if 'PPS' not in out.columns:
+        out['PPS'] = np.where(fga > 0, pts / fga, np.nan)
+    if '3PAr' not in out.columns:
+        out['3PAr'] = np.where(fga > 0, fg3a / fga, np.nan)
+    if 'FTr' not in out.columns:
+        out['FTr'] = np.where(fga > 0, fta / fga, np.nan)
+
+    for stat in ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']:
+        per36_col = f'{stat}/36'
+        if per36_col in out.columns or stat not in out.columns:
+            continue
+        stat_vals = pd.to_numeric(out[stat], errors='coerce')
+        out[per36_col] = np.where(mins > 0, stat_vals / mins * 36.0, np.nan)
+
+    return out
+
+
 # ---------------------------
 # Advanced metrics
 # ---------------------------
@@ -203,7 +235,7 @@ def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df:
         return f"No available stats for {player_name}."
 
     # Start from a copy and RENAME per-game fields right away (critical to avoid dividing by GP again)
-    pg = per_game_df.copy()
+    pg = _fill_derived_metrics(per_game_df.copy())
 
     rename_map = {
         'PTS': 'PPG',
@@ -248,7 +280,7 @@ def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df:
             pg[c] = pd.to_numeric(pg[c], errors='coerce').round(1)
 
     # Merge advanced metrics
-    adv = adv_df.copy() if adv_df is not None else pd.DataFrame()
+    adv = _fill_derived_metrics(adv_df.copy()) if adv_df is not None else pd.DataFrame()
     if adv is None or adv.empty:
         merged = pg.copy()
     else:
@@ -347,6 +379,88 @@ def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df:
         ]
 
     return "\n".join(lines)
+
+
+def build_ai_stat_packet(player_name: str, per_game_df: pd.DataFrame, adv_df: pd.DataFrame) -> dict:
+    """
+    Build a compact structured payload for the LLM.
+    Uses the latest season plus a short all-seasons table when available.
+    Omits keys whose values are missing instead of sending placeholders.
+    """
+    pg = _fill_derived_metrics(per_game_df.copy()) if per_game_df is not None else pd.DataFrame()
+    adv = _fill_derived_metrics(adv_df.copy()) if adv_df is not None else pd.DataFrame()
+
+    if (pg is None or pg.empty) and (adv is None or adv.empty):
+        return {
+            "player_name": player_name,
+            "latest_season": {},
+            "season_rows": [],
+            "available_metric_count": 0,
+        }
+    if pg is None or pg.empty:
+        pg = adv.copy()
+
+    rename_map = {
+        'PTS': 'PPG',
+        'REB': 'RPG',
+        'AST': 'APG',
+        'TOV': 'TPG',
+        'STL': 'SPG',
+        'BLK': 'BPG',
+        'MIN': 'MPG',
+    }
+    for src, dst in rename_map.items():
+        if src in pg.columns and dst not in pg.columns:
+            pg[dst] = pd.to_numeric(pg[src], errors='coerce')
+
+    keys = ['SEASON_ID']
+    if 'TEAM_ID' in pg.columns and 'TEAM_ID' in adv.columns:
+        keys.append('TEAM_ID')
+    elif 'TEAM_ABBREVIATION' in pg.columns and 'TEAM_ABBREVIATION' in adv.columns:
+        keys.append('TEAM_ABBREVIATION')
+
+    merged = pg.merge(adv, on=keys, how='left', suffixes=('', '_adv')) if not adv.empty else pg
+    merged = _ensure_season_start(merged)
+    if 'SEASON_START' in merged.columns:
+        merged = merged.sort_values(['SEASON_START', 'TEAM_ABBREVIATION'], kind='mergesort')
+
+    preferred_fields = [
+        'SEASON_ID', 'TEAM_ABBREVIATION', 'GP',
+        'PPG', 'RPG', 'APG', 'SPG', 'BPG', 'TPG', 'MPG',
+        'FG%', '3P%', 'FT%',
+        'TS%', 'EFG%', 'PPS', '3PAr', 'FTr',
+        'USG% (true)', 'AST%', 'TRB%', 'ORB%', 'DRB%', 'AST/TO',
+        'PTS/36', 'REB/36', 'AST/36', 'STL/36', 'BLK/36', 'TOV/36',
+    ]
+
+    def clean_value(v):
+        num = _to_num(v)
+        if num is None or pd.isna(num):
+            if isinstance(v, str) and v and v != "—":
+                return v
+            return None
+        return round(num, 2)
+
+    season_rows = []
+    for _, row in merged.iterrows():
+        item = {}
+        for field in preferred_fields:
+            if field not in merged.columns:
+                continue
+            cleaned = clean_value(row.get(field))
+            if cleaned is None:
+                continue
+            item[field] = cleaned
+        if item:
+            season_rows.append(item)
+
+    latest = season_rows[-1] if season_rows else {}
+    return {
+        "player_name": player_name,
+        "latest_season": latest,
+        "season_rows": season_rows,
+        "available_metric_count": len(latest),
+    }
 
 
 # ---------------------------
@@ -507,3 +621,32 @@ def compute_league_shooting_table(seasons: list[str]) -> pd.DataFrame:
                            np.nan)
 
     return grp[["SEASON_ID","SEASON_START","FG%","3P%","FT%","TS%","EFG%"]].copy()
+
+def build_ai_phase_table(adv_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns a compact season table for the LLM.
+    Must include SEASON_ID and key metrics.
+    """
+    if adv_df is None or adv_df.empty:
+        return pd.DataFrame()
+
+    # Import lazily here to avoid a module-level circular import.
+    from ui_compare import _make_readable_stats_table
+
+    # Make it readable first (your existing function)
+    nice, _, _ = _make_readable_stats_table(adv_df)
+
+    keep = [c for c in [
+        "Season", "Team",
+        "MIN/G", "PTS/G", "REB/G", "AST/G", "STL/G", "BLK/G", "TOV/G",
+        "TS%", "eFG%", "USG%", "AST%", "TRB%", "ORB%", "DRB%", "AST/TO",
+        "PTS/36", "REB/36", "AST/36", "STL/36", "BLK/36", "TOV/36"
+    ] if c in nice.columns]
+
+    out = nice[keep].copy()
+
+    # Ensure Season is not blank
+    if "Season" in out.columns:
+        out["Season"] = out["Season"].astype(str).replace({"—": "", "nan": "", "None": ""})
+
+    return out

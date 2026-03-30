@@ -7,11 +7,8 @@ import plotly.express as px
 import streamlit as st
 import json
 
-from nba_api.stats.endpoints import commonplayerinfo
-from nba_api.stats.static import players as nba_players
-
 # --- project imports
-from fetch import get_player_career, get_head_to_head_games
+from fetch import get_player_career, get_head_to_head_games, get_player_info, search_players, get_nba_headshot_url
 from metrics import (
     compute_full_advanced_stats,
     add_per_game_columns,
@@ -172,7 +169,9 @@ def _make_readable_stats_table(df: pd.DataFrame):
     cols = [
         c for c in cols
         if not c.endswith(drop_if_suffix) and c not in {
-            "PLAYER_AGE", "CFID", "CFPARAMS"
+            "PLAYER_AGE", "CFID", "CFPARAMS",
+            "FG_PCT", "FG3_PCT", "FT_PCT",
+            "PTS", "REB", "AST", "STL", "BLK", "TOV", "MIN"
         }
     ]
     nice = df[cols].copy()
@@ -202,6 +201,15 @@ def _make_readable_stats_table(df: pd.DataFrame):
         # attempts per game you added
         "3PA/G": "3PA/G",
         "2PA/G": "2PA/G",
+
+        # season totals
+        "FGM": "FGM",
+        "FG3M": "3PM",
+        "FTM": "FTM",
+        "FTA": "FTA",
+        "OREB": "OREB",
+        "DREB": "DREB",
+        "PLUS_MINUS": "+/-",
     }
     nice.rename(columns=rename, inplace=True)
 
@@ -213,6 +221,7 @@ def _make_readable_stats_table(df: pd.DataFrame):
         "FG%", "3P%", "FT%", "TS%", "eFG%",
         "Pts/Shot", "3PA Rate", "FT Rate",
         "USG%", "AST%", "TRB%", "ORB%", "DRB%", "AST/TO",
+        "FGM", "3PM", "FTM", "FTA", "OREB", "DREB", "+/-",
         "PTS/36", "REB/36", "AST/36", "STL/36", "BLK/36", "TOV/36",
         "FGM/36", "FGA/36", "FG3M/36", "OREB/36", "DREB/36",
     ]
@@ -223,6 +232,11 @@ def _make_readable_stats_table(df: pd.DataFrame):
     percent_cols = [c for c in ["FG%", "3P%", "FT%", "TS%", "eFG%", "USG%", "AST%", "TRB%", "ORB%", "DRB%"] if c in nice.columns]
     # Everything numeric that isn’t a percent → one decimal
     number_cols = [c for c in nice.columns if c not in percent_cols and pd.api.types.is_numeric_dtype(nice[c])]
+
+    # Totals should read like basketball box stats, not high-precision float outputs.
+    integer_like_cols = [c for c in ["GP", "FGM", "3PM", "FTM", "FTA", "OREB", "DREB", "+/-"] if c in nice.columns]
+    for c in integer_like_cols:
+        nice[c] = pd.to_numeric(nice[c], errors="coerce").round(1)
 
     return nice, number_cols, percent_cols
 
@@ -252,7 +266,7 @@ def _career_index(df: pd.DataFrame) -> pd.DataFrame:
 def _get_birth_year(player_id: int) -> int | None:
     """Year-only (approx) for season-level age alignment."""
     try:
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id).get_data_frames()[0]
+        info = get_player_info(player_id)
         bdate = str(info.loc[0, "BIRTHDATE"]).split("T")[0]
         return int(bdate[:4])
     except Exception:
@@ -310,7 +324,7 @@ def _align_for_chart(src1: pd.DataFrame, src2: pd.DataFrame, p1: str, p2: str, s
 def _find_player_by_name(name: str):
     if not name:
         return None
-    found = nba_players.find_players_by_full_name(name)
+    found = search_players(name)
     if not found:
         return None
     exact = [p for p in found if p["full_name"].lower() == name.lower()]
@@ -441,15 +455,25 @@ def render_compare_tab(primary_player: dict, model=None):
     # --- Top info cards
     cL, cR = st.columns(2)
     with cL:
-        info1 = commonplayerinfo.CommonPlayerInfo(player_id=primary_player['id']).get_data_frames()[0]
-        st.image(f"https://cdn.nba.com/headshots/nba/latest/1040x760/{primary_player['id']}.png", width=180)
+        headshot1 = get_nba_headshot_url(primary_player['id'], player_name=primary_player.get("full_name"), player_source=primary_player.get("source"))
+        if headshot1:
+            st.image(headshot1, width=180)
         st.markdown(f"**{p1}**")
-        st.caption(f"{info1.loc[0, 'TEAM_NAME']} • {info1.loc[0, 'POSITION']}")
+        try:
+            info1 = get_player_info(primary_player['id'], player_name=primary_player.get("full_name"), player_source=primary_player.get("source"))
+            st.caption(f"{info1.loc[0, 'TEAM_NAME']} • {info1.loc[0, 'POSITION']}")
+        except Exception:
+            st.caption("Player bio unavailable right now")
     with cR:
-        info2 = commonplayerinfo.CommonPlayerInfo(player_id=other_player['id']).get_data_frames()[0]
-        st.image(f"https://cdn.nba.com/headshots/nba/latest/1040x760/{other_player['id']}.png", width=180)
+        headshot2 = get_nba_headshot_url(other_player['id'], player_name=other_player.get("full_name"), player_source=other_player.get("source"))
+        if headshot2:
+            st.image(headshot2, width=180)
         st.markdown(f"**{p2}**")
-        st.caption(f"{info2.loc[0, 'TEAM_NAME']} • {info2.loc[0, 'POSITION']}")
+        try:
+            info2 = get_player_info(other_player['id'], player_name=other_player.get("full_name"), player_source=other_player.get("source"))
+            st.caption(f"{info2.loc[0, 'TEAM_NAME']} • {info2.loc[0, 'POSITION']}")
+        except Exception:
+            st.caption("Player bio unavailable right now")
 
     # --- Performance toggle
     comp_speed_mode = st.toggle(
@@ -460,10 +484,10 @@ def render_compare_tab(primary_player: dict, model=None):
     )
 
     # --- Load careers
-    raw1_pg = _nzdf(get_player_career(primary_player['id'], per_mode='PerGame'))
-    raw2_pg = _nzdf(get_player_career(other_player['id'],  per_mode='PerGame'))
-    raw1_t  = _nzdf(get_player_career(primary_player['id'], per_mode='Totals'))
-    raw2_t  = _nzdf(get_player_career(other_player['id'],  per_mode='Totals'))
+    raw1_pg = _nzdf(get_player_career(primary_player['id'], per_mode='PerGame', player_name=primary_player.get("full_name"), player_source=primary_player.get("source"), all_seasons=comp_speed_mode))
+    raw2_pg = _nzdf(get_player_career(other_player['id'],  per_mode='PerGame', player_name=other_player.get("full_name"), player_source=other_player.get("source"), all_seasons=comp_speed_mode))
+    raw1_t  = _nzdf(get_player_career(primary_player['id'], per_mode='Totals', player_name=primary_player.get("full_name"), player_source=primary_player.get("source"), all_seasons=comp_speed_mode))
+    raw2_t  = _nzdf(get_player_career(other_player['id'],  per_mode='Totals', player_name=other_player.get("full_name"), player_source=other_player.get("source"), all_seasons=comp_speed_mode))
 
     # --- Compute advanced (latest or all seasons)
     if comp_speed_mode:
@@ -475,8 +499,15 @@ def render_compare_tab(primary_player: dict, model=None):
         adv2_src = raw2_t[raw2_t['SEASON_ID'] == latest2] if latest2 else raw2_t
 
     with st.spinner("Computing comparison advanced metrics…"):
-        adv1 = compute_full_advanced_stats(adv1_src) if not adv1_src.empty else pd.DataFrame()
-        adv2 = compute_full_advanced_stats(adv2_src) if not adv2_src.empty else pd.DataFrame()
+        if not adv1_src.empty and adv1_src.attrs.get("provider") == "balldontlie":
+            adv1 = adv1_src.copy()
+        else:
+            adv1 = compute_full_advanced_stats(adv1_src) if not adv1_src.empty else pd.DataFrame()
+
+        if not adv2_src.empty and adv2_src.attrs.get("provider") == "balldontlie":
+            adv2 = adv2_src.copy()
+        else:
+            adv2 = compute_full_advanced_stats(adv2_src) if not adv2_src.empty else pd.DataFrame()
 
     # --- Add per-game aliases & SEASON_START to advanced frames
     adv1 = add_per_game_columns(adv1, raw1_pg)
@@ -702,7 +733,11 @@ def render_compare_tab(primary_player: dict, model=None):
                 p1_id, p2_id,
                 seasons=season_ids,
                 season_type=h2h_season_type,
-                force=int(force_refetch)  # cache key only
+                force=int(force_refetch),  # cache key only
+                p1_name=primary_player.get("full_name"),
+                p2_name=other_player.get("full_name"),
+                p1_source=primary_player.get("source"),
+                p2_source=other_player.get("source"),
             )
 
         if h2h.empty:

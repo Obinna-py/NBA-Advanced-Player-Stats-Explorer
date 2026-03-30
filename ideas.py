@@ -2,6 +2,10 @@
 from __future__ import annotations
 import numpy as np
 import streamlit as st
+import json
+import re
+import csv
+import io
 
 # ---------- simple presets exposed to UI ----------
 def presets():
@@ -167,3 +171,153 @@ def cached_ai_compare_question_ideas(p1: str, p2: str, c1: dict, c2: dict, topic
     """Cache-safe: _model is ignored by Streamlit's hasher (leading underscore)."""
     model_to_use = _model if use_model and _model is not None else None
     return _ai_compare_question_ideas(p1, p2, c1, c2, model=model_to_use, topic_hint=topic_hint)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    m = re.search(r"\{.*\}", cleaned, flags=re.S)
+    if not m:
+        return None
+
+    try:
+        parsed = json.loads(m.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _fallback_career_phases_from_table(phase_table: str) -> dict:
+    seasons = []
+    try:
+        reader = csv.DictReader(io.StringIO(phase_table))
+        for row in reader:
+            season = str(row.get("Season", "")).strip()
+            if season:
+                seasons.append(season)
+    except Exception:
+        seasons = []
+
+    seasons = [s for s in seasons if s]
+    if not seasons:
+        return {
+            "peak_season": "",
+            "early": [],
+            "prime": [],
+            "late": [],
+            "reasoning_short": {
+                "early": "Not enough clean season data was available.",
+                "prime": "Not enough clean season data was available.",
+                "late": "Not enough clean season data was available.",
+            },
+            "confidence": 0.25,
+        }
+
+    n = len(seasons)
+    if n == 1:
+        early, prime, late = [], [seasons[0]], []
+    elif n == 2:
+        early, prime, late = [seasons[0]], [seasons[1]], []
+    elif n == 3:
+        early, prime, late = [seasons[0]], seasons[1:], []
+    else:
+        early_end = max(1, round(n * 0.3))
+        late_start = max(early_end + 1, n - max(1, round(n * 0.25)))
+        early = seasons[:early_end]
+        prime = seasons[early_end:late_start]
+        late = seasons[late_start:]
+        if not prime:
+            prime = [seasons[-1]]
+
+    peak = prime[-1] if prime else seasons[-1]
+    return {
+        "peak_season": peak,
+        "early": early,
+        "prime": prime,
+        "late": late,
+        "reasoning_short": {
+            "early": "This fallback groups the earliest seasons as developmental years when the model does not return valid JSON.",
+            "prime": "This fallback treats the strongest recent stretch as the current prime window, especially for short careers.",
+            "late": "This fallback only labels late-career seasons when there is a long enough timeline to justify that bucket.",
+        },
+        "confidence": 0.45 if n >= 3 else 0.35,
+    }
+
+
+def _ai_detect_career_phases(player_name: str, phase_table: str, model) -> dict:
+    """
+    phase_table: a string version of a compact table (csv or markdown).
+    model: your Gemini model instance.
+    Returns dict with early/prime/late and explanations.
+    """
+
+    prompt = f"""
+You are an NBA analytics assistant.
+
+Task:
+Given ONLY the provided season-by-season stats, label the player's career into:
+- early career
+- prime
+- late career
+
+Rules:
+- Use only the numbers in the table. Do not use outside knowledge.
+- Prime can be long (e.g., sustained plateau) or short (1-3 seasons). Choose what the stats justify.
+- Early should generally be before prime, late generally after prime.
+- If the stats show a second peak, you may still output a single PRIME block; include that note in reasoning.
+- Output MUST be valid JSON ONLY. No markdown, no extra text.
+
+Output JSON schema:
+{{
+  "peak_season": "YYYY-YY",
+  "early": ["YYYY-YY", ...],
+  "prime": ["YYYY-YY", ...],
+  "late": ["YYYY-YY", ...],
+  "reasoning_short": {{
+     "early": "1-2 sentences",
+     "prime": "1-2 sentences",
+     "late": "1-2 sentences"
+  }},
+  "confidence": 0.0
+}}
+
+Season-by-season table:
+{phase_table}
+"""
+
+    resp = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.2,
+            "max_output_tokens": 1200,
+            "response_mime_type": "application/json",
+        }
+    )
+
+    text = resp.text if hasattr(resp, "text") else str(resp)
+    data = _extract_json_object(text)
+    if data is not None:
+        return data
+    return _fallback_career_phases_from_table(phase_table)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def ai_detect_career_phases(player_name: str, phase_table: str, use_model: bool, _model=None) -> dict:
+    """Cache-safe wrapper: _model is ignored by Streamlit's hasher."""
+    model_to_use = _model if use_model and _model is not None else None
+    if model_to_use is None:
+        raise ValueError("AI model is not available.")
+    return _ai_detect_career_phases(player_name, phase_table, model_to_use)

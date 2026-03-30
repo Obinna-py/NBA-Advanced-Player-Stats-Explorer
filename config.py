@@ -9,31 +9,39 @@ def ensure_page_config():
 # Paste your key here if you don't want to use env vars or secrets:
 # LOCAL fallback (only used if secrets/env vars are missing)
 LOCAL_GEMINI_API_KEY = ""  # e.g., "AIza..."
+LOCAL_BALLDONTLIE_API_KEY = ""
 
-def _load_api_key():
-    # 1) Streamlit secrets (recommended for Streamlit Cloud / local .streamlit/secrets.toml)
-    key = st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None
-    if not key:
-        key = st.secrets.get("GOOGLE_API_KEY") if hasattr(st, "secrets") else None
+def _load_key(secret_names: list[str], env_names: list[str], local_fallback: str = ""):
+    key = None
 
-    # 2) Environment variables
-    if not key:
-        key = os.getenv("GEMINI_API_KEY")
-    if not key:
-        key = os.getenv("GOOGLE_API_KEY")
+    if hasattr(st, "secrets"):
+        for name in secret_names:
+            key = st.secrets.get(name)
+            if key:
+                return key
 
-    # 3) Local fallback (last resort; only used if you paste it above)
-    if not key and LOCAL_GEMINI_API_KEY:
-        key = LOCAL_GEMINI_API_KEY
+    for name in env_names:
+        key = os.getenv(name)
+        if key:
+            return key
 
-    return key
+    return local_fallback or None
 
-_API_KEY = _load_api_key()
+_API_KEY = _load_key(
+    ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    LOCAL_GEMINI_API_KEY,
+)
+BALLDONTLIE_API_KEY = _load_key(
+    ["BALLDONTLIE_API_KEY"],
+    ["BALLDONTLIE_API_KEY"],
+    LOCAL_BALLDONTLIE_API_KEY,
+)
 
 if _API_KEY:
     try:
         genai.configure(api_key=_API_KEY)
-        model = genai.GenerativeModel("models/gemini-2.5-flash-lite")
+        model = genai.GenerativeModel("models/gemini-2.5-flash")
         AI_ENABLED = True
     except Exception as e:
         # If something goes wrong configuring the SDK, disable AI gracefully
