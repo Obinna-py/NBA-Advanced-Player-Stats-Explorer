@@ -6,6 +6,8 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 import json
+import html
+import re
 from config import ai_generate_text, AI_SETUP_ERROR
 try:
     from streamlit_searchbox import st_searchbox
@@ -56,6 +58,135 @@ _COMPARE_SEARCHBOX_STYLE_OVERRIDES = {
     "dropdown": {"fill": "#9ca3af", "width": 22, "height": 22, "rotate": True},
     "clear": {"width": 18, "height": 18, "icon": "cross", "clearable": "always"},
 }
+
+
+STAT_TOOLTIPS = {
+    "PPG": "Points Per Game: the average number of points a player scores each game.",
+    "RPG": "Rebounds Per Game: the average number of rebounds a player grabs each game.",
+    "APG": "Assists Per Game: the average number of assists a player records each game.",
+    "SPG": "Steals Per Game: the average number of steals a player records each game.",
+    "BPG": "Blocks Per Game: the average number of shots a player blocks each game.",
+    "STL/G": "Steals Per Game: the average number of steals a player records each game.",
+    "BLK/G": "Blocks Per Game: the average number of shots a player blocks each game.",
+    "TOV/G": "Turnovers Per Game: the average number of turnovers a player commits each game.",
+    "MIN/G": "Minutes Per Game: the average number of minutes a player plays each game.",
+    "FG%": "Field Goal Percentage: the share of all field-goal attempts a player makes.",
+    "3P%": "Three-Point Percentage: the share of three-point attempts a player makes.",
+    "FT%": "Free Throw Percentage: the share of free throws a player makes.",
+    "2P%": "Two-Point Percentage: the share of two-point attempts a player makes.",
+    "2PA/G": "Two-Point Attempts Per Game: how many two-point shots a player takes each game.",
+    "3PA/G": "Three-Point Attempts Per Game: how many threes a player takes each game.",
+    "FGM": "Field Goals Made: total made field goals in the selected view.",
+    "3PM": "Three-Point Field Goals Made: total made threes in the selected view.",
+    "FTM": "Free Throws Made: total made free throws in the selected view.",
+    "FTA": "Free Throw Attempts: total free throw attempts in the selected view.",
+    "TS%": "True Shooting Percentage: scoring efficiency that combines twos, threes, and free throws into one number.",
+    "eFG%": "Effective Field Goal Percentage: field-goal efficiency that gives extra credit for made threes.",
+    "USG%": "Usage Percentage: estimate of how much of the offense a player personally finishes while on the floor.",
+    "AST%": "Assist Percentage: estimate of the share of teammate field goals a player assisted while on the court.",
+    "TRB%": "Total Rebound Percentage: estimate of the share of all available rebounds a player grabbed while on the floor.",
+    "ORB%": "Offensive Rebound Percentage: estimate of the share of available offensive rebounds a player grabbed.",
+    "DRB%": "Defensive Rebound Percentage: estimate of the share of available defensive rebounds a player grabbed.",
+    "AST/TO": "Assist-to-Turnover Ratio: how often a player creates assists relative to how often they turn it over.",
+    "3PAr": "Three-Point Attempt Rate: the share of a player's field-goal attempts that come from three.",
+    "FTr": "Free Throw Rate: how often a player gets to the foul line relative to field-goal attempts.",
+    "PPS": "Points Per Shot: a quick efficiency read on how many points a player produces per field-goal attempt.",
+    "Pts/Shot": "Points Per Shot: a quick efficiency read on how many points a player produces per field-goal attempt.",
+    "PTS": "Points: total points in the selected view.",
+    "REB": "Rebounds: total rebounds in the selected view.",
+    "AST": "Assists: total assists in the selected view.",
+    "STL": "Steals: total steals in the selected view.",
+    "BLK": "Blocks: total blocks in the selected view.",
+    "TOV": "Turnovers: total turnovers in the selected view.",
+    "GP": "Games Played: number of games included in the selected view.",
+    "Season": "The NBA season shown in the row.",
+}
+
+
+def _tooltip_attr(text: str) -> str:
+    return html.escape(text, quote=True)
+
+
+def _label_with_tooltip(label: str) -> str:
+    tooltip = STAT_TOOLTIPS.get(label)
+    if not tooltip:
+        return html.escape(label)
+    return (
+        f'<span class="stat-tooltip" title="{_tooltip_attr(tooltip)}">'
+        f"{html.escape(label)}</span>"
+    )
+
+
+_STAT_TERM_PATTERN = re.compile(
+    "|".join(sorted((re.escape(k) for k in STAT_TOOLTIPS.keys()), key=len, reverse=True))
+)
+
+
+def annotate_stat_terms(text: str) -> str:
+    escaped = html.escape(str(text))
+    for stat in sorted(STAT_TOOLTIPS.keys(), key=len, reverse=True):
+        escaped = escaped.replace(html.escape(stat), _label_with_tooltip(stat))
+    return escaped
+
+
+def render_stat_text(text: str, *, small: bool = False) -> None:
+    cls = "stat-inline-text stat-inline-text--small" if small else "stat-inline-text"
+    st.markdown(
+        f"""
+        <style>
+        .stat-inline-text {{
+          color: rgba(255,255,255,0.86);
+          line-height: 1.55;
+          font-size: 0.97rem;
+        }}
+        .stat-inline-text--small {{
+          color: rgba(255,255,255,0.68);
+          font-size: 0.85rem;
+        }}
+        .stat-inline-text .stat-tooltip {{
+          cursor: help;
+          text-decoration: underline dotted rgba(255,255,255,0.35);
+          text-underline-offset: 3px;
+        }}
+        </style>
+        <div class="{cls}">{annotate_stat_terms(text)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _inject_sticky_ai_rail_css(anchor_class: str) -> None:
+    st.markdown(
+        f"""
+        <style>
+        div[data-testid="column"]:has(.{anchor_class}) {{
+          position: fixed;
+          top: 0;
+          right: 0;
+          width: min(360px, 30vw);
+          height: 100vh;
+          overflow-y: auto;
+          background: #262730;
+          border-left: 1px solid rgba(255,255,255,0.08);
+          box-shadow: -18px 0 32px rgba(0,0,0,0.22);
+          padding: 5.25rem 1rem 1rem 1rem;
+          z-index: 40;
+        }}
+        .{anchor_class} {{
+          display: none;
+        }}
+        div[data-testid="column"]:has(.{anchor_class}) h3,
+        div[data-testid="column"]:has(.{anchor_class}) p,
+        div[data-testid="column"]:has(.{anchor_class}) label {{
+          color: #f9fafb;
+        }}
+        div[data-testid="column"]:has(.{anchor_class}) .stButton > button {{
+          width: 100%;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # -------------------------
@@ -180,6 +311,7 @@ def render_html_table(
     number_cols=None,
     percent_cols=None,
     date_cols=None,
+    tooltip_map=None,
     max_height_px=420,
 ):
     import pandas as pd
@@ -230,6 +362,16 @@ def render_html_table(
     )
 
     html = styler.to_html()
+    tooltip_map = tooltip_map or STAT_TOOLTIPS
+    for col in df2.columns:
+        tooltip = tooltip_map.get(str(col))
+        if not tooltip:
+            continue
+        html = html.replace(
+            f">{col}</th>",
+            f'>{_label_with_tooltip(str(col))}</th>',
+            1,
+        )
 
 
 
@@ -250,6 +392,11 @@ def render_html_table(
   font-weight: 600;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255,255,255,0.08);
+}}
+.nice-table .stat-tooltip {{
+  cursor: help;
+  text-decoration: underline dotted rgba(255,255,255,0.35);
+  text-underline-offset: 3px;
 }}
 .nice-table tbody td {{
   padding: 8px 12px;
@@ -1034,7 +1181,10 @@ def _render_comparison_verdict_cards(player_frames: list[dict], scope_label: str
         return
 
     st.markdown("### 🏁 Comparison Verdict Cards")
-    st.caption(f"Quick winners from the selected compare view ({scope_label}), evaluated across all {len(player_frames)} selected players.")
+    render_stat_text(
+        f"Quick winners from the selected compare view ({scope_label}), evaluated across all {len(player_frames)} selected players.",
+        small=True,
+    )
     cols = st.columns(min(3, len(verdicts)))
     for idx, verdict in enumerate(verdicts):
         with cols[idx % len(cols)]:
@@ -1042,9 +1192,9 @@ def _render_comparison_verdict_cards(player_frames: list[dict], scope_label: str
             if delta and "%" in verdict["display"]:
                 delta += " pts"
             st.metric(verdict["label"], verdict["winner"], delta=delta)
-            st.caption(f"{verdict['display']} in the current compare view")
+            render_stat_text(f"{verdict['display']} in the current compare view", small=True)
             if verdict.get("why"):
-                st.caption(verdict["why"])
+                render_stat_text(verdict["why"], small=True)
 
 
 def _render_percentile_compare_view(player_frames: list[dict], scope_label: str) -> None:
@@ -1083,7 +1233,7 @@ def _render_percentile_compare_view(player_frames: list[dict], scope_label: str)
 
     percentile_df = pd.DataFrame(rows)
     st.markdown("### 📈 Percentile Compare View")
-    st.caption("Latest-season percentile context so the comparison is easier to read than raw stats alone.")
+    render_stat_text("Latest-season percentile context so the comparison is easier to read than raw stats alone.", small=True)
 
     pivot = percentile_df.pivot(index="Metric", columns="Player", values="Percentile").reset_index()
     player_cols = [c for c in pivot.columns if c != "Metric"]
@@ -1298,7 +1448,7 @@ def render_compare_tab(primary_player: dict, model=None):
         "Prime": "Comparing each player's AI-labeled prime seasons.",
         "Late Career": "Comparing each player's AI-labeled late-career seasons.",
     }
-    st.caption(compare_view_captions.get(selected_compare_view, ""))
+    render_stat_text(compare_view_captions.get(selected_compare_view, ""), small=True)
 
     scoped_frames = []
     for item in player_frames:
@@ -1321,286 +1471,309 @@ def render_compare_tab(primary_player: dict, model=None):
         })
     player_frames = scoped_frames
 
-    st.subheader("📊 Advanced Stats")
-    st.caption(f"Showing the selected compare view: {selected_compare_view}.")
-    tabs = st.tabs([item["name"] for item in player_frames])
-    for tab, item in zip(tabs, player_frames):
-        with tab:
-            show_df = item["adv"][metric_public_cols(item["adv"])] if not item["adv"].empty else item["adv"]
-            show_df, nums, pcts = _make_readable_stats_table(show_df)
-            render_html_table(show_df, number_cols=nums, percent_cols=pcts, max_height_px=420)
+    if "show_compare_ai_rail" not in st.session_state:
+        st.session_state["show_compare_ai_rail"] = True
+    rail_toggle_col_left, rail_toggle_col_right = st.columns([4.5, 1.2])
+    with rail_toggle_col_right:
+        if st.button(
+            "Hide AI sidebar" if st.session_state["show_compare_ai_rail"] else "Show AI sidebar",
+            key="toggle_compare_ai_rail",
+            use_container_width=True,
+        ):
+            st.session_state["show_compare_ai_rail"] = not st.session_state["show_compare_ai_rail"]
+            st.rerun()
 
-    align_mode = st.radio(
-        "Align seasons by",
-        ["Calendar (overlap only)", "Career year", "Age"],
-        horizontal=True,
-        key="cmp_align_mode"
-    )
-    era_toggle = st.checkbox("Era-adjust (stat+ vs league avg = 100)", value=False, key="era_adjust_toggle")
-
-    if align_mode == "Age":
-        for item in player_frames:
-            birth_year = _get_birth_year(item["player"]["id"])
-            item["chart_src"] = _add_age_column(item["chart_src"], birth_year)
-
-    year_sets = [
-        set(item["chart_src"]["SEASON_START"].unique().tolist())
-        for item in player_frames
-        if item["chart_src"] is not None and not item["chart_src"].empty and "SEASON_START" in item["chart_src"].columns
-    ]
-    common_years = sorted(set.intersection(*year_sets)) if year_sets else []
-
-    if align_mode == "Calendar (overlap only)":
-        if not common_years:
-            st.warning("No overlapping calendar seasons across the selected players. Try 'Career year' or 'Age' alignment.")
-        elif len(common_years) == 1:
-            y = common_years[0]
-            st.caption(f"Only one overlapping season ({y}-{str(y+1)[-2:]}).")
-            for item in player_frames:
-                if "SEASON_START" in item["chart_src"].columns:
-                    item["chart_src"] = item["chart_src"].loc[item["chart_src"]["SEASON_START"].eq(y)].copy()
-        else:
-            with st.expander("🔧 Filter seasons to compare (calendar)", expanded=False):
-                yr_lo, yr_hi = st.slider(
-                    "Season start year range",
-                    min_value=min(common_years),
-                    max_value=max(common_years),
-                    value=(min(common_years), max(common_years)),
-                    step=1,
-                    key="cmp_season_range_slider",
-                )
-            for item in player_frames:
-                if "SEASON_START" in item["chart_src"].columns:
-                    item["chart_src"] = item["chart_src"].loc[
-                        item["chart_src"]["SEASON_START"].between(yr_lo, yr_hi)
-                    ].copy()
-
-    shared_stats = _pick_shared_stats_for_many([item["chart_src"] for item in player_frames])
-    if not shared_stats:
-        st.warning("No shared numeric stats available to compare.")
-        st.stop()
-
-    default_name = "PPG" if "PPG" in shared_stats else ("PTS" if "PTS" in shared_stats else shared_stats[0])
-    stat_choice = st.selectbox(
-        "📊 Choose a stat to compare:",
-        shared_stats,
-        index=shared_stats.index(default_name) if default_name in shared_stats else 0,
-        key="cmp_stat_choice",
-    )
-
-    supported_plus = {"TS%","EFG%","FG%","3P%","FT%"}
-    stat_for_align = stat_choice
-    label_suffix = ""
-    if era_toggle and stat_choice in supported_plus:
-        all_seasons = sorted({
-            int(season)
-            for item in player_frames
-            for season in (item["chart_src"]["SEASON_START"].unique().tolist() if "SEASON_START" in item["chart_src"].columns else [])
-        })
-        league_tbl = compute_league_shooting_table([f"{y}-{str(y+1)[-2:]}" for y in all_seasons])
-        for item in player_frames:
-            item["chart_src"] = item["chart_src"].merge(
-                league_tbl[["SEASON_START", stat_choice]].rename(columns={stat_choice: "LEAGUE_BASE"}),
-                on="SEASON_START",
-                how="left",
-            )
-            item["chart_src"][f"{stat_choice}+"] = np.where(
-                item["chart_src"]["LEAGUE_BASE"] > 0,
-                100.0 * pd.to_numeric(item["chart_src"][stat_choice], errors="coerce") / item["chart_src"]["LEAGUE_BASE"],
-                np.nan,
-            )
-            item["chart_src"].drop(columns=["LEAGUE_BASE"], errors="ignore", inplace=True)
-        stat_for_align = f"{stat_choice}+"
-        label_suffix = "+"
-    elif era_toggle and stat_choice not in supported_plus:
-        st.info("Era-adjust currently supports TS%, EFG%, FG%, 3P%, FT%. Showing raw values.")
-
-    aligned = _build_multi_aligned_df(player_frames, stat_for_align, align_mode)
-    if aligned.empty:
-        st.warning("No aligned values are available for that comparison view right now.")
+    if st.session_state["show_compare_ai_rail"]:
+        _inject_sticky_ai_rail_css("sticky-compare-ai-rail")
+        main_col, ai_col = st.columns([3.2, 1.35], gap="large")
     else:
-        x_label = {"Calendar (overlap only)": "Season", "Career year": "Career Year", "Age": "Age (approx)"}[align_mode]
-        title = f"{stat_choice}{label_suffix} — {align_mode}"
-        fig = px.line(aligned, x="X", y="Value", color="Player", markers=True, title=title)
-        fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
-        st.plotly_chart(fig, use_container_width=True)
+        main_col = st.container()
+        ai_col = None
 
-    _render_comparison_verdict_cards(player_frames, selected_compare_view)
-    _render_percentile_compare_view(player_frames, selected_compare_view)
+    with main_col:
+        st.subheader("📊 Advanced Stats")
+        render_stat_text(f"Showing the selected compare view: {selected_compare_view}.", small=True)
+        tabs = st.tabs([item["name"] for item in player_frames])
+        for tab, item in zip(tabs, player_frames):
+            with tab:
+                show_df = item["adv"][metric_public_cols(item["adv"])] if not item["adv"].empty else item["adv"]
+                show_df, nums, pcts = _make_readable_stats_table(show_df)
+                render_html_table(show_df, number_cols=nums, percent_cols=pcts, max_height_px=420)
 
-    if len(player_frames) == 2:
-        st.markdown("## ⚔️ Head-to-Head")
-        h2h_season_type = st.radio(
-            "Games to include",
-            ["Regular Season", "Playoffs"],
+        align_mode = st.radio(
+            "Align seasons by",
+            ["Calendar (overlap only)", "Career year", "Age"],
             horizontal=True,
-            key="h2h_season_type"
+            key="cmp_align_mode"
         )
-        pf1, pf2 = player_frames
-        years1 = set(pf1["raw_pg"]["SEASON_START"].unique().tolist()) if not pf1["raw_pg"].empty and "SEASON_START" in pf1["raw_pg"].columns else set()
-        years2 = set(pf2["raw_pg"]["SEASON_START"].unique().tolist()) if not pf2["raw_pg"].empty and "SEASON_START" in pf2["raw_pg"].columns else set()
-        h2h_years = sorted(years1 & years2)
+        era_toggle = st.checkbox("Era-adjust (stat+ vs league avg = 100)", value=False, key="era_adjust_toggle")
 
-        if not h2h_years:
-            st.info("These players never shared an NBA season, so there are no head-to-head games.")
-        else:
-            if len(h2h_years) == 1:
-                yr_lo, yr_hi = h2h_years[0], h2h_years[0]
+        if align_mode == "Age":
+            for item in player_frames:
+                birth_year = _get_birth_year(item["player"]["id"])
+                item["chart_src"] = _add_age_column(item["chart_src"], birth_year)
+
+        year_sets = [
+            set(item["chart_src"]["SEASON_START"].unique().tolist())
+            for item in player_frames
+            if item["chart_src"] is not None and not item["chart_src"].empty and "SEASON_START" in item["chart_src"].columns
+        ]
+        common_years = sorted(set.intersection(*year_sets)) if year_sets else []
+
+        if align_mode == "Calendar (overlap only)":
+            if not common_years:
+                st.warning("No overlapping calendar seasons across the selected players. Try 'Career year' or 'Age' alignment.")
+            elif len(common_years) == 1:
+                y = common_years[0]
+                st.caption(f"Only one overlapping season ({y}-{str(y+1)[-2:]}).")
+                for item in player_frames:
+                    if "SEASON_START" in item["chart_src"].columns:
+                        item["chart_src"] = item["chart_src"].loc[item["chart_src"]["SEASON_START"].eq(y)].copy()
             else:
-                with st.expander("🔧 Filter head-to-head by season range (calendar)", expanded=False):
+                with st.expander("🔧 Filter seasons to compare (calendar)", expanded=False):
                     yr_lo, yr_hi = st.slider(
                         "Season start year range",
-                        min_value=min(h2h_years),
-                        max_value=max(h2h_years),
-                        value=(min(h2h_years), max(h2h_years)),
+                        min_value=min(common_years),
+                        max_value=max(common_years),
+                        value=(min(common_years), max(common_years)),
                         step=1,
-                        key="h2h_year_range",
+                        key="cmp_season_range_slider",
                     )
-            season_ids = [f"{y}-{str(y+1)[-2:]}" for y in h2h_years if y >= yr_lo and y <= yr_hi]
-            force_refetch = st.checkbox("🔁 Force re-fetch (bypass cache; slower)", value=False, key="h2h_force")
-            with st.spinner("Loading head-to-head…"):
-                h2h = get_head_to_head_games(
-                    pf1["player"]["id"], pf2["player"]["id"],
-                    seasons=season_ids,
-                    season_type=h2h_season_type,
-                    force=int(force_refetch),
-                    p1_name=pf1["player"].get("full_name"),
-                    p2_name=pf2["player"].get("full_name"),
-                    p1_source=pf1["player"].get("source"),
-                    p2_source=pf2["player"].get("source"),
+                for item in player_frames:
+                    if "SEASON_START" in item["chart_src"].columns:
+                        item["chart_src"] = item["chart_src"].loc[
+                            item["chart_src"]["SEASON_START"].between(yr_lo, yr_hi)
+                        ].copy()
+
+        shared_stats = _pick_shared_stats_for_many([item["chart_src"] for item in player_frames])
+        if not shared_stats:
+            st.warning("No shared numeric stats available to compare.")
+            st.stop()
+
+        default_name = "PPG" if "PPG" in shared_stats else ("PTS" if "PTS" in shared_stats else shared_stats[0])
+        stat_choice = st.selectbox(
+            "📊 Choose a stat to compare:",
+            shared_stats,
+            index=shared_stats.index(default_name) if default_name in shared_stats else 0,
+            key="cmp_stat_choice",
+        )
+
+        supported_plus = {"TS%","EFG%","FG%","3P%","FT%"}
+        stat_for_align = stat_choice
+        label_suffix = ""
+        if era_toggle and stat_choice in supported_plus:
+            all_seasons = sorted({
+                int(season)
+                for item in player_frames
+                for season in (item["chart_src"]["SEASON_START"].unique().tolist() if "SEASON_START" in item["chart_src"].columns else [])
+            })
+            league_tbl = compute_league_shooting_table([f"{y}-{str(y+1)[-2:]}" for y in all_seasons])
+            for item in player_frames:
+                item["chart_src"] = item["chart_src"].merge(
+                    league_tbl[["SEASON_START", stat_choice]].rename(columns={stat_choice: "LEAGUE_BASE"}),
+                    on="SEASON_START",
+                    how="left",
                 )
-            if h2h.empty:
-                provider = h2h.attrs.get("provider")
-                if provider == "balldontlie":
-                    st.info("No head-to-head games were returned from balldontlie for the chosen range / season type.")
-                else:
-                    st.info("No head-to-head games found in the chosen range / season type.")
-            else:
-                p1 = pf1["name"]
-                p2 = pf2["name"]
-                insights = _h2h_matchup_insights(h2h, p1, p2)
-                def _avg(col):
-                    return float(pd.to_numeric(h2h[col], errors="coerce").mean()) if col in h2h.columns else None
-                colA, colB, colC = st.columns(3)
-                with colA:
-                    st.metric("Games", len(h2h))
-                with colB:
-                    if "P1_WIN" in h2h.columns:
-                        wins = int(h2h["P1_WIN"].sum())
-                        st.metric(f"{p1} W-L", f"{wins}-{len(h2h)-wins}")
-                with colC:
-                    if "PTS_P1" in h2h.columns and "PTS_P2" in h2h.columns:
-                        p1_pts = round(_avg("PTS_P1") or 0, 1)
-                        p2_pts = round(_avg("PTS_P2") or 0, 1)
-                        st.metric("PPG (H2H)", f"{p1_pts} vs {p2_pts}", delta=f"{(p1_pts - p2_pts):+.1f}")
+                item["chart_src"][f"{stat_choice}+"] = np.where(
+                    item["chart_src"]["LEAGUE_BASE"] > 0,
+                    100.0 * pd.to_numeric(item["chart_src"][stat_choice], errors="coerce") / item["chart_src"]["LEAGUE_BASE"],
+                    np.nan,
+                )
+                item["chart_src"].drop(columns=["LEAGUE_BASE"], errors="ignore", inplace=True)
+            stat_for_align = f"{stat_choice}+"
+            label_suffix = "+"
+        elif era_toggle and stat_choice not in supported_plus:
+            st.info("Era-adjust currently supports TS%, EFG%, FG%, 3P%, FT%. Showing raw values.")
 
-                if insights:
-                    st.markdown("### Matchup Insights")
-                    summary = insights.get("summary", [])
-                    if summary:
-                        for line in summary:
-                            st.write(f"- {line}")
-
-                    edge_df = pd.DataFrame(insights.get("edges", []))
-                    if not edge_df.empty:
-                        render_html_table(
-                            edge_df[["Category", "Winner", "Detail"]],
-                            max_height_px=260,
-                        )
-
-                    snapshot = insights.get("snapshot", {})
-                    if snapshot:
-                        snap_rows = []
-                        for player_name, stats in snapshot.items():
-                            row = {"Player": player_name}
-                            row.update(stats)
-                            snap_rows.append(row)
-                        snapshot_df = pd.DataFrame(snap_rows)
-                        render_html_table(
-                            snapshot_df,
-                            number_cols=["PTS", "REB", "AST"],
-                            percent_cols=["TS%", "FG%", "3P%", "FT%"],
-                            max_height_px=220,
-                        )
-
-                chart_keys = ["PTS","REB","AST","STL","BLK","TOV"]
-                plot_df = pd.DataFrame({
-                    "Stat": chart_keys,
-                    p1: [round(_avg(f"{k}_P1") or 0.0, 2) for k in chart_keys],
-                    p2: [round(_avg(f"{k}_P2") or 0.0, 2) for k in chart_keys],
-                })
-                fig = px.bar(plot_df.melt(id_vars=["Stat"], var_name="Player", value_name="Value"),
-                             x="Stat", y="Value", color="Player", barmode="group",
-                             title=f"Head-to-Head Averages — {h2h_season_type}")
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Head-to-head is available when exactly 2 players are selected.")
-
-    with st.expander("💡 Comparison Question Ideas for these players", expanded=False):
-        topic_map = {
-            "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
-            "Scoring & Efficiency": "TS%, eFG%, PPS, 3PAr, FTr, PTS/36, shooting splits",
-            "Playmaking & TOs": "AST%, AST/TO, TOV trend, usage vs passing load",
-            "Rebounding & Defense": "TRB%, ORB%, DRB%, STL/36, BLK/36",
-            "Peak & Trends": "best/worst seasons, YoY changes, prime window",
-        }
-        preset = st.radio("Quick presets", list(topic_map.keys()), horizontal=True, key="compare_idea_preset")
-        topic = st.text_input("Optional focus (refines suggestions):", value=topic_map[preset], key="compare_idea_focus")
-        if len(player_frames) == 2:
-            p1 = player_frames[0]["name"]
-            p2 = player_frames[1]["name"]
-            c1 = player_frames[0]["ctx"]
-            c2 = player_frames[1]["ctx"]
-            try:
-                ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None), _model=model)
-            except Exception as e:
-                st.warning(f"Ideas generator hiccup: {e}")
-                ideas_cmp = []
+        aligned = _build_multi_aligned_df(player_frames, stat_for_align, align_mode)
+        if aligned.empty:
+            st.warning("No aligned values are available for that comparison view right now.")
         else:
-            ideas_cmp = _seed_multi_compare_questions([item["name"] for item in player_frames])
-        st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
-        for i in range(0, len(ideas_cmp), 2):
-            cols = st.columns(min(2, len(ideas_cmp) - i))
-            for col, idea in zip(cols, ideas_cmp[i:i+2]):
-                short = abbrev(idea, 40)
-                with col:
+            x_label = {"Calendar (overlap only)": "Season", "Career year": "Career Year", "Age": "Age (approx)"}[align_mode]
+            title = f"{stat_choice}{label_suffix} — {align_mode}"
+            fig = px.line(aligned, x="X", y="Value", color="Player", markers=True, title=title)
+            fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
+            st.plotly_chart(fig, use_container_width=True)
+
+        _render_comparison_verdict_cards(player_frames, selected_compare_view)
+        _render_percentile_compare_view(player_frames, selected_compare_view)
+
+        if len(player_frames) == 2:
+            st.markdown("## ⚔️ Head-to-Head")
+            h2h_season_type = st.radio(
+                "Games to include",
+                ["Regular Season", "Playoffs"],
+                horizontal=True,
+                key="h2h_season_type"
+            )
+            pf1, pf2 = player_frames
+            years1 = set(pf1["raw_pg"]["SEASON_START"].unique().tolist()) if not pf1["raw_pg"].empty and "SEASON_START" in pf1["raw_pg"].columns else set()
+            years2 = set(pf2["raw_pg"]["SEASON_START"].unique().tolist()) if not pf2["raw_pg"].empty and "SEASON_START" in pf2["raw_pg"].columns else set()
+            h2h_years = sorted(years1 & years2)
+
+            if not h2h_years:
+                st.info("These players never shared an NBA season, so there are no head-to-head games.")
+            else:
+                if len(h2h_years) == 1:
+                    yr_lo, yr_hi = h2h_years[0], h2h_years[0]
+                else:
+                    with st.expander("🔧 Filter head-to-head by season range (calendar)", expanded=False):
+                        yr_lo, yr_hi = st.slider(
+                            "Season start year range",
+                            min_value=min(h2h_years),
+                            max_value=max(h2h_years),
+                            value=(min(h2h_years), max(h2h_years)),
+                            step=1,
+                            key="h2h_year_range",
+                        )
+                season_ids = [f"{y}-{str(y+1)[-2:]}" for y in h2h_years if y >= yr_lo and y <= yr_hi]
+                force_refetch = st.checkbox("🔁 Force re-fetch (bypass cache; slower)", value=False, key="h2h_force")
+                with st.spinner("Loading head-to-head…"):
+                    h2h = get_head_to_head_games(
+                        pf1["player"]["id"], pf2["player"]["id"],
+                        seasons=season_ids,
+                        season_type=h2h_season_type,
+                        force=int(force_refetch),
+                        p1_name=pf1["player"].get("full_name"),
+                        p2_name=pf2["player"].get("full_name"),
+                        p1_source=pf1["player"].get("source"),
+                        p2_source=pf2["player"].get("source"),
+                    )
+                if h2h.empty:
+                    provider = h2h.attrs.get("provider")
+                    if provider == "balldontlie":
+                        st.info("No head-to-head games were returned from balldontlie for the chosen range / season type.")
+                    else:
+                        st.info("No head-to-head games found in the chosen range / season type.")
+                else:
+                    p1 = pf1["name"]
+                    p2 = pf2["name"]
+                    insights = _h2h_matchup_insights(h2h, p1, p2)
+                    def _avg(col):
+                        return float(pd.to_numeric(h2h[col], errors="coerce").mean()) if col in h2h.columns else None
+                    colA, colB, colC = st.columns(3)
+                    with colA:
+                        st.metric("Games", len(h2h))
+                    with colB:
+                        if "P1_WIN" in h2h.columns:
+                            wins = int(h2h["P1_WIN"].sum())
+                            st.metric(f"{p1} W-L", f"{wins}-{len(h2h)-wins}")
+                    with colC:
+                        if "PTS_P1" in h2h.columns and "PTS_P2" in h2h.columns:
+                            p1_pts = round(_avg("PTS_P1") or 0, 1)
+                            p2_pts = round(_avg("PTS_P2") or 0, 1)
+                            st.metric("PPG (H2H)", f"{p1_pts} vs {p2_pts}", delta=f"{(p1_pts - p2_pts):+.1f}")
+
+                    if insights:
+                        st.markdown("### Matchup Insights")
+                        summary = insights.get("summary", [])
+                        if summary:
+                            for line in summary:
+                                st.write(f"- {line}")
+
+                        edge_df = pd.DataFrame(insights.get("edges", []))
+                        if not edge_df.empty:
+                            render_html_table(
+                                edge_df[["Category", "Winner", "Detail"]],
+                                max_height_px=260,
+                            )
+
+                        snapshot = insights.get("snapshot", {})
+                        if snapshot:
+                            snap_rows = []
+                            for player_name, stats in snapshot.items():
+                                row = {"Player": player_name}
+                                row.update(stats)
+                                snap_rows.append(row)
+                            snapshot_df = pd.DataFrame(snap_rows)
+                            render_html_table(
+                                snapshot_df,
+                                number_cols=["PTS", "REB", "AST"],
+                                percent_cols=["TS%", "FG%", "3P%", "FT%"],
+                                max_height_px=220,
+                            )
+
+                    chart_keys = ["PTS","REB","AST","STL","BLK","TOV"]
+                    plot_df = pd.DataFrame({
+                        "Stat": chart_keys,
+                        p1: [round(_avg(f"{k}_P1") or 0.0, 2) for k in chart_keys],
+                        p2: [round(_avg(f"{k}_P2") or 0.0, 2) for k in chart_keys],
+                    })
+                    fig = px.bar(plot_df.melt(id_vars=["Stat"], var_name="Player", value_name="Value"),
+                                 x="Stat", y="Value", color="Player", barmode="group",
+                                 title=f"Head-to-Head Averages — {h2h_season_type}")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Head-to-head is available when exactly 2 players are selected.")
+
+    if ai_col is not None:
+        with ai_col:
+            st.markdown('<div class="sticky-compare-ai-rail"></div>', unsafe_allow_html=True)
+            st.markdown("### 🧠 AI Tools")
+            st.caption("Open or close each panel as needed.")
+
+            with st.expander("Comparison Question Ideas", expanded=False):
+                topic_map = {
+                    "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
+                    "Scoring & Efficiency": "TS%, eFG%, PPS, 3PAr, FTr, PTS/36, shooting splits",
+                    "Playmaking & TOs": "AST%, AST/TO, TOV trend, usage vs passing load",
+                    "Rebounding & Defense": "TRB%, ORB%, DRB%, STL/36, BLK/36",
+                    "Peak & Trends": "best/worst seasons, YoY changes, prime window",
+                }
+                preset = st.radio("Quick presets", list(topic_map.keys()), horizontal=True, key="compare_idea_preset")
+                topic = st.text_input("Optional focus (refines suggestions):", value=topic_map[preset], key="compare_idea_focus")
+                if len(player_frames) == 2:
+                    p1 = player_frames[0]["name"]
+                    p2 = player_frames[1]["name"]
+                    c1 = player_frames[0]["ctx"]
+                    c2 = player_frames[1]["ctx"]
+                    try:
+                        ideas_cmp = cached_ai_compare_question_ideas(p1, p2, c1, c2, topic, use_model=(model is not None), _model=model)
+                    except Exception as e:
+                        st.warning(f"Ideas generator hiccup: {e}")
+                        ideas_cmp = []
+                else:
+                    ideas_cmp = _seed_multi_compare_questions([item["name"] for item in player_frames])
+                st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
+                for i, idea in enumerate(ideas_cmp):
+                    short = abbrev(idea, 44)
                     if st.button(f"💭 {short}", help=idea, use_container_width=True, key=f"cmp_idea_btn_{i}_{short}"):
                         st.session_state["ai_compare_question"] = idea
                         smooth_scroll_to(make_anchor("compare_ai_anchor"))
                         st.rerun()
 
-    anchor = make_anchor("compare_ai_anchor")
-    with st.expander("🧠 Ask the AI Assistant about these players", expanded=False):
-        if model:
-            q2 = st.text_input("Ask something about these players:", key="ai_compare_question")
-            if q2:
-                summaries = []
-                for item in player_frames:
-                    summary = generate_player_summary(
-                        item["name"],
-                        item["raw_pg"] if not item["raw_pg"].empty else item["adv"],
-                        item["adv"],
-                    )
-                    summaries.append(f"{item['name']}:\n{summary}")
-                prompt2 = (
-                    "You are an expert NBA analyst. Compare the selected players strictly using the provided season tables. "
-                    "Give a fuller answer, use specific stats to support claims, and when helpful rank the players for the question being asked. "
-                    "Lean on TS%, eFG%, PPS, 3PAr, FTr, USG% (true), AST%, TRB%, per-game output, and per-36 trends. "
-                    "If data is missing for a metric, acknowledge it and use available proxies.\n\n"
-                    + "\n\n".join(summaries)
-                    + f"\n\nQuestion: {q2}"
-                )
-                with st.spinner("Analyzing…"):
-                    try:
-                        text = ai_generate_text(model, prompt2, max_output_tokens=4096, temperature=0.6)
-                        st.markdown("### 🧠 AI Analysis")
-                        st.write(text or "No response.")
-                    except Exception as e:
-                        st.warning(_friendly_ai_error_message(e))
-                        st.caption(f"Details: {type(e).__name__}")
-        else:
-            if AI_SETUP_ERROR:
-                st.info("AI is unavailable in this deployment right now.")
-                st.caption(f"Setup details: {AI_SETUP_ERROR}")
-            else:
-                st.info("Add your OpenAI API key to enable AI analysis.")
+            anchor = make_anchor("compare_ai_anchor")
+            with st.expander("Ask the AI Assistant", expanded=True):
+                if model:
+                    q2 = st.text_input("Ask something about these players:", key="ai_compare_question")
+                    if q2:
+                        summaries = []
+                        for item in player_frames:
+                            summary = generate_player_summary(
+                                item["name"],
+                                item["raw_pg"] if not item["raw_pg"].empty else item["adv"],
+                                item["adv"],
+                            )
+                            summaries.append(f"{item['name']}:\n{summary}")
+                        prompt2 = (
+                            "You are an expert NBA analyst. Compare the selected players strictly using the provided season tables. "
+                            "Give a fuller answer, use specific stats to support claims, and when helpful rank the players for the question being asked. "
+                            "Lean on TS%, eFG%, PPS, 3PAr, FTr, USG% (true), AST%, TRB%, per-game output, and per-36 trends. "
+                            "If data is missing for a metric, acknowledge it and use available proxies.\n\n"
+                            + "\n\n".join(summaries)
+                            + f"\n\nQuestion: {q2}"
+                        )
+                        with st.spinner("Analyzing…"):
+                            try:
+                                text = ai_generate_text(model, prompt2, max_output_tokens=4096, temperature=0.6)
+                                st.markdown("### 🧠 AI Analysis")
+                                st.write(text or "No response.")
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")

@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import html
 from datetime import datetime
 from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
@@ -11,77 +12,7 @@ from fetch import get_player_career, get_player_info, get_balldontlie_player, ge
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
-from ui_compare import render_html_table, _make_readable_stats_table
-
-
-_STAT_GLOSSARY = {
-    "TS%": {
-        "name": "True Shooting Percentage",
-        "meaning": "A scoring-efficiency stat that folds twos, threes, and free throws into one number.",
-        "reading": "Higher is better. Roughly speaking, high-50s is strong, 60%+ is elite for real volume scorers.",
-        "why_it_matters": "It gives a cleaner efficiency picture than plain field-goal percentage because it values threes and free throws properly.",
-    },
-    "eFG%": {
-        "name": "Effective Field Goal Percentage",
-        "meaning": "A shooting-efficiency stat that gives extra credit for made threes because they are worth more than twos.",
-        "reading": "Higher is better. It is especially useful for understanding shot-making from the field.",
-        "why_it_matters": "It shows whether a player is getting efficient value from their shot mix, but it does not include free throws.",
-    },
-    "USG%": {
-        "name": "Usage Percentage",
-        "meaning": "An estimate of how much of a team’s offense a player personally finishes while on the floor through shots, free throws, or turnovers.",
-        "reading": "Higher means more offensive burden. Around 20% is modest, upper-20s is star-level, and 30%+ is a huge load.",
-        "why_it_matters": "It helps separate players who put up stats in small roles from players carrying a real offensive workload.",
-    },
-    "AST%": {
-        "name": "Assist Percentage",
-        "meaning": "An estimate of the share of teammate field goals a player assisted while on the court.",
-        "reading": "Higher means more playmaking responsibility.",
-        "why_it_matters": "It is often more useful than raw assists per game because it adjusts better for team context and minutes.",
-    },
-    "TRB%": {
-        "name": "Total Rebound Percentage",
-        "meaning": "An estimate of the share of available rebounds a player grabbed while on the court.",
-        "reading": "Higher is better for rebounding impact.",
-        "why_it_matters": "It is better than raw rebounds alone when comparing players across roles, pace, and minutes.",
-    },
-    "ORB%": {
-        "name": "Offensive Rebound Percentage",
-        "meaning": "The estimated share of available offensive rebounds a player grabbed while on the court.",
-        "reading": "Higher means more second-chance creation on the offensive glass.",
-        "why_it_matters": "It helps identify rim-pressure bigs and energy rebounders.",
-    },
-    "DRB%": {
-        "name": "Defensive Rebound Percentage",
-        "meaning": "The estimated share of available defensive rebounds a player grabbed while on the court.",
-        "reading": "Higher means stronger defensive glass control.",
-        "why_it_matters": "It helps show who finishes possessions and stabilizes team defense.",
-    },
-    "AST/TO": {
-        "name": "Assist-to-Turnover Ratio",
-        "meaning": "A simple ball-control stat comparing how often a player creates an assist relative to how often they turn it over.",
-        "reading": "Higher is better, though role matters because high-usage creators are naturally exposed to more turnovers.",
-        "why_it_matters": "It is a quick read on playmaking efficiency and decision-making.",
-    },
-    "3PAr": {
-        "name": "Three-Point Attempt Rate",
-        "meaning": "The share of a player’s field-goal attempts that come from three-point range.",
-        "reading": "Higher means a more perimeter-heavy shot profile.",
-        "why_it_matters": "It helps explain whether a player’s shooting value comes from real spacing volume or just a small number of threes.",
-    },
-    "FTr": {
-        "name": "Free Throw Rate",
-        "meaning": "How often a player gets to the line relative to their field-goal attempts.",
-        "reading": "Higher usually means more rim pressure, physicality, or foul drawing.",
-        "why_it_matters": "It helps show which scorers generate easy points and pressure defenses.",
-    },
-    "PPS": {
-        "name": "Points Per Shot",
-        "meaning": "A simple efficiency read on how many points a player produces per field-goal attempt.",
-        "reading": "Higher is better.",
-        "why_it_matters": "It is a fast way to understand scoring return on shot volume.",
-    },
-}
+from ui_compare import render_html_table, _make_readable_stats_table, STAT_TOOLTIPS, _label_with_tooltip, render_stat_text, _inject_sticky_ai_rail_css
 
 
 def _friendly_ai_error_message(error: Exception) -> str:
@@ -221,28 +152,53 @@ def _position_family_label(position: str) -> str:
     return "Other"
 
 
-def _render_stat_explainer() -> None:
-    st.markdown("### 📚 Explain the Stats")
-    st.caption("Quick definitions for newer users so the advanced metrics stay readable.")
+def _render_hover_stat_cards(cards: list[tuple[str, str]]) -> None:
+    if not cards:
+        return
 
-    metric = st.selectbox(
-        "Pick a stat to explain",
-        list(_STAT_GLOSSARY.keys()),
-        index=0,
-        key="stat_glossary_picker",
+    st.markdown(
+        """
+        <style>
+        .hover-stat-card {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 14px;
+          padding: 14px 16px;
+          min-height: 110px;
+        }
+        .hover-stat-label {
+          color: rgba(255,255,255,0.72);
+          font-size: 0.85rem;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .hover-stat-value {
+          color: #f9fafb;
+          font-size: 2rem;
+          font-weight: 700;
+          line-height: 1.1;
+        }
+        .hover-stat-label .stat-tooltip {
+          cursor: help;
+          text-decoration: underline dotted rgba(255,255,255,0.35);
+          text-underline-offset: 3px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    item = _STAT_GLOSSARY[metric]
-    st.info(f"**{metric} — {item['name']}**")
-    st.write(f"**What it means:** {item['meaning']}")
-    st.write(f"**How to read it:** {item['reading']}")
-    st.write(f"**Why it matters:** {item['why_it_matters']}")
-
-    with st.expander("See the full glossary", expanded=False):
-        for stat, details in _STAT_GLOSSARY.items():
-            st.markdown(f"**{stat} — {details['name']}**")
-            st.write(details["meaning"])
-            st.caption(f"How to read it: {details['reading']}")
-            st.caption(f"Why it matters: {details['why_it_matters']}")
+    cols = st.columns(len(cards))
+    for col, (label, value) in zip(cols, cards):
+        with col:
+            st.markdown(
+                f"""
+                <div class="hover-stat-card">
+                  <div class="hover-stat-label">{_label_with_tooltip(label)}</div>
+                  <div class="hover-stat-value">{html.escape(value)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, percentile_df: pd.DataFrame) -> None:
@@ -620,221 +576,236 @@ def stats_tab(player, model):
             st.caption(player.get("full_name", ""))
         with stats_col:
             if selected_summary_label and selected_summary_label in summary_captions:
-                st.caption(summary_captions[selected_summary_label])
-            m1, m2, m3, m4 = st.columns(4)
+                render_stat_text(summary_captions[selected_summary_label], small=True)
             ppg_val = pd.to_numeric(latest.get("PPG", latest.get("PTS", np.nan)), errors="coerce")
             rpg_val = pd.to_numeric(latest.get("RPG", latest.get("REB", np.nan)), errors="coerce")
             apg_val = pd.to_numeric(latest.get("APG", latest.get("AST", np.nan)), errors="coerce")
-            m1.metric("PPG", f"{ppg_val:.1f}" if pd.notna(ppg_val) else "—")
-            m2.metric("RPG", f"{rpg_val:.1f}" if pd.notna(rpg_val) else "—")
-            m3.metric("APG", f"{apg_val:.1f}" if pd.notna(apg_val) else "—")
             ts_val = latest.get('TS%', np.nan)
             ts_num = pd.to_numeric(ts_val, errors="coerce")
-            m4.metric("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—")
+            _render_hover_stat_cards([
+                ("PPG", f"{ppg_val:.1f}" if pd.notna(ppg_val) else "—"),
+                ("RPG", f"{rpg_val:.1f}" if pd.notna(rpg_val) else "—"),
+                ("APG", f"{apg_val:.1f}" if pd.notna(apg_val) else "—"),
+                ("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—"),
+            ])
 
+    if "show_player_ai_rail" not in st.session_state:
+        st.session_state["show_player_ai_rail"] = True
+    rail_toggle_col_left, rail_toggle_col_right = st.columns([4.5, 1.2])
+    with rail_toggle_col_right:
+        if st.button(
+            "Hide AI sidebar" if st.session_state["show_player_ai_rail"] else "Show AI sidebar",
+            key="toggle_player_ai_rail",
+            use_container_width=True,
+        ):
+            st.session_state["show_player_ai_rail"] = not st.session_state["show_player_ai_rail"]
+            st.rerun()
 
-    if display_adv is not None and not display_adv.empty:
-        stats_df, number_cols, percent_cols = _make_readable_stats_table(display_adv)
+    if st.session_state["show_player_ai_rail"]:
+        _inject_sticky_ai_rail_css("sticky-player-ai-rail")
+        main_col, ai_col = st.columns([3.2, 1.35], gap="large")
+    else:
+        main_col = st.container()
+        ai_col = None
 
-        render_html_table(
-            stats_df,
-            number_cols=number_cols,
-            percent_cols=percent_cols,
-            max_height_px=520
-        )
+    with main_col:
+        if display_adv is not None and not display_adv.empty:
+            stats_df, number_cols, percent_cols = _make_readable_stats_table(display_adv)
 
-        latest_season_id = str(display_adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in display_adv.columns else ""
-        percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, display_adv)
-        _render_player_storytelling_dashboard(player["full_name"], display_adv, percentile_df)
-        if not percentile_df.empty:
-            st.markdown("### 📈 Percentile & Ranking Context")
-            st.caption("Latest-season context versus the league distribution from balldontlie season averages.")
-
-            top_rows = percentile_df.head(6).copy()
-            summary_cols = st.columns(min(3, len(top_rows)))
-            for col, (_, row) in zip(summary_cols, top_rows.iterrows()):
-                with col:
-                    st.metric(
-                        row["Metric"],
-                        f"{row['Percentile']:.1f} pct",
-                        delta=f"Rank {int(row['Rank'])} / {int(row['Of'])}",
-                    )
-
-            display_df = percentile_df.copy()
-            display_df["Percentile"] = pd.to_numeric(display_df["Percentile"], errors="coerce")
-            display_df["Rank / Field"] = display_df.apply(
-                lambda r: f"{int(r['Rank'])} / {int(r['Of'])}" if pd.notna(r["Rank"]) and pd.notna(r["Of"]) else "—",
-                axis=1,
-            )
-            display_df = display_df[["Category", "Metric", "Value", "Percentile", "Rank / Field"]]
             render_html_table(
-                display_df,
-                number_cols=["Value"],
+                stats_df,
+                number_cols=number_cols,
                 percent_cols=["Percentile"],
-                max_height_px=360,
+                max_height_px=520
             )
 
-        archetype = detect_player_archetype(player["full_name"], display_adv, percentile_df)
-        if archetype:
-            st.markdown("### 🧩 Role Archetype")
-            c1, c2 = st.columns([1.4, 1])
-            with c1:
-                st.metric("Primary Role", archetype["primary"])
-                if archetype.get("primary_description"):
-                    st.caption(archetype["primary_description"])
-                if archetype.get("secondary"):
-                    st.caption(f"Secondary role: {archetype['secondary']}")
-                    if archetype.get("secondary_description"):
-                        st.caption(archetype["secondary_description"])
-                if archetype.get("style_tags"):
-                    st.write("**Style Tags:** " + ", ".join(archetype["style_tags"]))
-                if archetype.get("impact_tags"):
-                    st.write("**Impact Tags:** " + ", ".join(archetype["impact_tags"]))
-                st.caption(f"Confidence: {archetype['confidence']:.2f}")
-                for line in archetype.get("evidence", []):
-                    st.write(f"- {line}")
-                tag_descriptions = archetype.get("tag_descriptions", {})
-                if tag_descriptions:
-                    with st.expander("What these tags mean", expanded=False):
-                        for tag in archetype.get("style_tags", []) + archetype.get("impact_tags", []):
-                            desc = tag_descriptions.get(tag)
-                            if desc:
-                                st.write(f"**{tag}:** {desc}")
-            with c2:
-                scores = pd.DataFrame(archetype.get("style_scores", []))
-                if not scores.empty:
-                    render_html_table(
-                        scores,
-                        number_cols=["Score"],
-                        max_height_px=260,
-                    )
+            latest_season_id = str(display_adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in display_adv.columns else ""
+            percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, display_adv)
+            _render_player_storytelling_dashboard(player["full_name"], display_adv, percentile_df)
+            if not percentile_df.empty:
+                st.markdown("### 📈 Percentile & Ranking Context")
+                render_stat_text("Latest-season context versus the league distribution from balldontlie season averages.", small=True)
 
-        similar_df = find_similar_players(player["full_name"], latest_season_id, display_adv, limit=6)
-        if not similar_df.empty:
-            st.markdown("### 🧬 Similar Player Finder")
-            st.caption("Closest latest-season statistical matches from the league-wide balldontlie season-average pool.")
-            top_match = similar_df.iloc[0]
-            st.info(
-                f"Closest match right now: **{top_match['Player']}** "
-                f"({top_match['Similarity']:.1f} similarity) based on {top_match['Why Similar']}."
-            )
-            render_html_table(
-                similar_df,
-                number_cols=["Similarity", "PPG", "RPG", "APG"],
-                percent_cols=["TS%", "3P%", "USG%"],
-                max_height_px=360,
-            )
-
-        _render_stat_explainer()
-    if full_adv is not None and not full_adv.empty and model:
-        st.markdown("### 🧠 AI Career Phases")
-
-        phase_df = build_ai_phase_table(full_adv if full_adv is not None and not full_adv.empty else adv)
-        seasons = phase_df["Season"].dropna().astype(str).tolist() if "Season" in phase_df.columns else []
-
-        if not seasons:
-            st.warning("No Season values available for phase detection.")
-        else:
-            # Convert to compact text for model (CSV is easiest)
-            phase_table_text = phase_df.to_csv(index=False)
-
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                run_ai = st.button("Run AI Career Phase Detection", use_container_width=True)
-
-            if run_ai:
-                with st.spinner("AI is labeling early/prime/late…"):
-                    try:
-                        phases = ai_detect_career_phases(
-                            player["full_name"],
-                            phase_table_text,
-                            use_model=(model is not None),
-                            _model=model,
+                top_rows = percentile_df.head(6).copy()
+                summary_cols = st.columns(min(3, len(top_rows)))
+                for col, (_, row) in zip(summary_cols, top_rows.iterrows()):
+                    with col:
+                        st.metric(
+                            row["Metric"],
+                            f"{row['Percentile']:.1f} pct",
+                            delta=f"Rank {int(row['Rank'])} / {int(row['Of'])}",
                         )
-                        phases = validate_phase_output(phases, seasons)
-                        phase_store = st.session_state.setdefault("career_phases_by_player", {})
-                        phase_store[_player_phase_state_key(player)] = phases
-                        st.session_state["career_phases"] = phases
-                    except Exception as e:
-                        st.warning(_friendly_ai_error_message(e))
-                        st.caption(f"Details: {type(e).__name__}")
 
-            phase_store = st.session_state.get("career_phases_by_player", {})
-            phases = phase_store.get(_player_phase_state_key(player)) or st.session_state.get("career_phases")
-            if phases:
-                st.success(
-                    f"Peak season: **{phases['peak_season']}** • Confidence: **{phases['confidence']:.2f}**"
+                display_df = percentile_df.copy()
+                display_df["Percentile"] = pd.to_numeric(display_df["Percentile"], errors="coerce")
+                display_df["Rank / Field"] = display_df.apply(
+                    lambda r: f"{int(r['Rank'])} / {int(r['Of'])}" if pd.notna(r["Rank"]) and pd.notna(r["Of"]) else "—",
+                    axis=1,
+                )
+                display_df = display_df[["Category", "Metric", "Value", "Percentile", "Rank / Field"]]
+                render_html_table(
+                    display_df,
+                    number_cols=["Value"],
+                    percent_cols=["Percentile"],
+                    max_height_px=360,
                 )
 
-                # Quick chips
-                st.write(
-                    f"**Early:** {', '.join(phases['early']) if phases['early'] else '—'}\n\n"
-                    f"**Prime:** {', '.join(phases['prime']) if phases['prime'] else '—'}\n\n"
-                    f"**Late:** {', '.join(phases['late']) if phases['late'] else '—'}"
+            archetype = detect_player_archetype(player["full_name"], display_adv, percentile_df)
+            if archetype:
+                st.markdown("### 🧩 Role Archetype")
+                c1, c2 = st.columns([1.4, 1])
+                with c1:
+                    st.metric("Primary Role", archetype["primary"])
+                    if archetype.get("primary_description"):
+                        st.caption(archetype["primary_description"])
+                    if archetype.get("secondary"):
+                        st.caption(f"Secondary role: {archetype['secondary']}")
+                        if archetype.get("secondary_description"):
+                            st.caption(archetype["secondary_description"])
+                    if archetype.get("style_tags"):
+                        st.write("**Style Tags:** " + ", ".join(archetype["style_tags"]))
+                    if archetype.get("impact_tags"):
+                        st.write("**Impact Tags:** " + ", ".join(archetype["impact_tags"]))
+                    st.caption(f"Confidence: {archetype['confidence']:.2f}")
+                    for line in archetype.get("evidence", []):
+                        st.write(f"- {line}")
+                    tag_descriptions = archetype.get("tag_descriptions", {})
+                    if tag_descriptions:
+                        with st.expander("What these tags mean", expanded=False):
+                            for tag in archetype.get("style_tags", []) + archetype.get("impact_tags", []):
+                                desc = tag_descriptions.get(tag)
+                                if desc:
+                                    st.write(f"**{tag}:** {desc}")
+                with c2:
+                    scores = pd.DataFrame(archetype.get("style_scores", []))
+                    if not scores.empty:
+                        render_html_table(
+                            scores,
+                            number_cols=["Score"],
+                            max_height_px=260,
+                        )
+
+            similar_df = find_similar_players(player["full_name"], latest_season_id, display_adv, limit=6)
+            if not similar_df.empty:
+                st.markdown("### 🧬 Similar Player Finder")
+                render_stat_text("Closest latest-season statistical matches from the league-wide balldontlie season-average pool.", small=True)
+                top_match = similar_df.iloc[0]
+                render_stat_text(
+                    f"Closest match right now: {top_match['Player']} "
+                    f"({top_match['Similarity']:.1f} similarity) based on {top_match['Why Similar']}.",
+                )
+                render_html_table(
+                    similar_df,
+                    number_cols=["Similarity", "PPG", "RPG", "APG"],
+                    percent_cols=["TS%", "3P%", "USG%"],
+                    max_height_px=360,
                 )
 
-                rs = phases.get("reasoning_short", {})
-                with st.expander("Why the AI chose these phases"):
-                    st.write(f"**Early:** {rs.get('early','—')}")
-                    st.write(f"**Prime:** {rs.get('prime','—')}")
-                    st.write(f"**Late:** {rs.get('late','—')}")
+            render_stat_text("Hover over stat labels in the cards, tables, and stat blurbs to see quick explanations.", small=True)
 
-        
-    with st.expander("💡 Question Ideas for this player", expanded=False):
-        choices, topic_map = presets()
-        preset = st.radio("Quick presets", choices, horizontal=True, key="idea_preset")
-        topic_default = topic_map.get(preset, "")
-        topic = st.text_input("Optional focus (refines suggestions):", value=topic_default, key="idea_focus")
-        ctx = compact_player_context(adv if not adv.empty else raw_pergame)
-        # 👇 changed: pass `_model=model` instead of `model=model`
-        ideas = cached_ai_question_ideas(player['full_name'], ctx, topic, use_model=(model is not None), _model=model)
-        st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
-        cols_per_row = 2
-        for i in range(0, len(ideas), cols_per_row):
-            row = ideas[i:i+cols_per_row]
-            cols = st.columns(len(row))
-            for c, idea in zip(cols, row):
-                short = abbrev(idea, 32)
-                with c:
+    if ai_col is not None:
+        with ai_col:
+            st.markdown('<div class="sticky-player-ai-rail"></div>', unsafe_allow_html=True)
+            st.markdown("### 🧠 AI Tools")
+            st.caption("Open or close each panel as needed.")
+
+            with st.expander("Career Phase Detection", expanded=False):
+                if full_adv is not None and not full_adv.empty and model:
+                    phase_df = build_ai_phase_table(full_adv if full_adv is not None and not full_adv.empty else adv)
+                    seasons = phase_df["Season"].dropna().astype(str).tolist() if "Season" in phase_df.columns else []
+
+                    if not seasons:
+                        st.warning("No Season values available for phase detection.")
+                    else:
+                        phase_table_text = phase_df.to_csv(index=False)
+                        run_ai = st.button("Run AI Career Phase Detection", use_container_width=True)
+
+                        if run_ai:
+                            with st.spinner("AI is labeling early/prime/late…"):
+                                try:
+                                    phases = ai_detect_career_phases(
+                                        player["full_name"],
+                                        phase_table_text,
+                                        use_model=(model is not None),
+                                        _model=model,
+                                    )
+                                    phases = validate_phase_output(phases, seasons)
+                                    phase_store = st.session_state.setdefault("career_phases_by_player", {})
+                                    phase_store[_player_phase_state_key(player)] = phases
+                                    st.session_state["career_phases"] = phases
+                                except Exception as e:
+                                    st.warning(_friendly_ai_error_message(e))
+                                    st.caption(f"Details: {type(e).__name__}")
+
+                        phase_store = st.session_state.get("career_phases_by_player", {})
+                        phases = phase_store.get(_player_phase_state_key(player)) or st.session_state.get("career_phases")
+                        if phases:
+                            st.success(
+                                f"Peak season: **{phases['peak_season']}** • Confidence: **{phases['confidence']:.2f}**"
+                            )
+                            st.write(
+                                f"**Early:** {', '.join(phases['early']) if phases['early'] else '—'}\n\n"
+                                f"**Prime:** {', '.join(phases['prime']) if phases['prime'] else '—'}\n\n"
+                                f"**Late:** {', '.join(phases['late']) if phases['late'] else '—'}"
+                            )
+
+                            rs = phases.get("reasoning_short", {})
+                            with st.expander("Why the AI chose these phases", expanded=False):
+                                st.write(f"**Early:** {rs.get('early','—')}")
+                                st.write(f"**Prime:** {rs.get('prime','—')}")
+                                st.write(f"**Late:** {rs.get('late','—')}")
+                else:
+                    st.info("Career phase detection becomes available when AI and seasonal data are available.")
+
+            with st.expander("Question Ideas", expanded=False):
+                choices, topic_map = presets()
+                preset = st.radio("Quick presets", choices, horizontal=True, key="idea_preset")
+                topic_default = topic_map.get(preset, "")
+                topic = st.text_input("Optional focus (refines suggestions):", value=topic_default, key="idea_focus")
+                ctx = compact_player_context(adv if not adv.empty else raw_pergame)
+                ideas = cached_ai_question_ideas(player['full_name'], ctx, topic, use_model=(model is not None), _model=model)
+                st.caption("Stat-based, evaluative prompts. Click to drop one into the box below.")
+                for i, idea in enumerate(ideas):
+                    short = abbrev(idea, 40)
                     if st.button(f"💭 {short}", help=idea, use_container_width=True, key=f"idea_btn_{i}_{short}"):
                         st.session_state["ai_question"] = idea
                         st.rerun()
 
-    with st.expander("🧠 Ask the AI Assistant about this player"):
-        if model:
-            q = st.text_input("Ask something about this player:", key="ai_question")
-            if q:
-                pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
-                adv_for_summary     = adv if adv is not None else pd.DataFrame()
-                summary = generate_player_summary(player['full_name'], pergame_for_summary, adv_for_summary)
-                stat_packet = build_ai_stat_packet(player['full_name'], pergame_for_summary, adv_for_summary)
-                prompt = (
-                    f"You are an expert NBA analyst writing for a curious basketball fan.\n\n"
-                    f"Answer the question using ONLY the stats provided below.\n"
-                    f"Write a fuller analysis, not a short answer.\n"
-                    f"Give 3-5 solid paragraphs unless the question is extremely narrow.\n"
-                    f"Be direct, but explain your reasoning clearly and tie claims to specific stats.\n"
-                    f"If some metrics are unavailable, do not refuse the question. Use the available metrics, explain what they show, and mention a missing stat only if it materially limits precision.\n"
-                    f"Do not claim a stat is missing if it appears in the structured stat packet.\n"
-                    f"Prefer the structured stat packet first, then use the season summary for extra context.\n"
-                    f"When useful, compare efficiency, volume, playmaking load, rebounding, and trends across seasons.\n"
-                    f"End with a short bottom-line takeaway sentence.\n\n"
-                    f"Structured stat packet:\n{stat_packet}\n\n"
-                    f"Season summary:\n{summary}\n\n"
-                    f"Question: {q}\n\n"
-                    f"Note: Some advanced metrics are estimates from team-context formulas."
-                )
-                with st.spinner("Analyzing…"):
-                    try:
-                        text = ai_generate_text(model, prompt, max_output_tokens=3072, temperature=0.7)
-                        st.markdown("### 🧠 AI Analysis")
-                        st.write(text or "No response.")
-                    except Exception as e:
-                        st.warning(_friendly_ai_error_message(e))
-                        st.caption(f"Details: {type(e).__name__}")
-        else:
-            if AI_SETUP_ERROR:
-                st.info("AI is unavailable in this deployment right now.")
-                st.caption(f"Setup details: {AI_SETUP_ERROR}")
-            else:
-                st.info("Add your OpenAI API key to enable AI analysis.")
+            with st.expander("Ask the AI Assistant", expanded=True):
+                if model:
+                    q = st.text_input("Ask something about this player:", key="ai_question")
+                    if q:
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = adv if adv is not None else pd.DataFrame()
+                        summary = generate_player_summary(player['full_name'], pergame_for_summary, adv_for_summary)
+                        stat_packet = build_ai_stat_packet(player['full_name'], pergame_for_summary, adv_for_summary)
+                        prompt = (
+                            f"You are an expert NBA analyst writing for a curious basketball fan.\n\n"
+                            f"Answer the question using ONLY the stats provided below.\n"
+                            f"Write a fuller analysis, not a short answer.\n"
+                            f"Give 3-5 solid paragraphs unless the question is extremely narrow.\n"
+                            f"Be direct, but explain your reasoning clearly and tie claims to specific stats.\n"
+                            f"If some metrics are unavailable, do not refuse the question. Use the available metrics, explain what they show, and mention a missing stat only if it materially limits precision.\n"
+                            f"Do not claim a stat is missing if it appears in the structured stat packet.\n"
+                            f"Prefer the structured stat packet first, then use the season summary for extra context.\n"
+                            f"When useful, compare efficiency, volume, playmaking load, rebounding, and trends across seasons.\n"
+                            f"End with a short bottom-line takeaway sentence.\n\n"
+                            f"Structured stat packet:\n{stat_packet}\n\n"
+                            f"Season summary:\n{summary}\n\n"
+                            f"Question: {q}\n\n"
+                            f"Note: Some advanced metrics are estimates from team-context formulas."
+                        )
+                        with st.spinner("Analyzing…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=3072, temperature=0.7)
+                                st.markdown("### 🧠 AI Analysis")
+                                st.write(text or "No response.")
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
