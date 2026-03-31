@@ -929,15 +929,27 @@ def _safe_latest_value(df: pd.DataFrame, col: str) -> float | None:
 
 
 def _latest_player_value(item: dict, col: str) -> float | None:
+    alias_map = {
+        "BLK/G": ["BLK/G", "BPG", "BLK"],
+        "STL/G": ["STL/G", "SPG", "STL"],
+        "TOV/G": ["TOV/G", "TPG", "TOV"],
+        "MIN/G": ["MIN/G", "MPG", "MIN"],
+    }
+    candidate_cols = alias_map.get(col, [col])
+
     summary_df = item.get("summary_df")
-    val = _safe_latest_value(summary_df, col) if isinstance(summary_df, pd.DataFrame) else None
-    if val is not None:
-        return val
+    if isinstance(summary_df, pd.DataFrame):
+        for candidate in candidate_cols:
+            val = _safe_latest_value(summary_df, candidate)
+            if val is not None:
+                return val
     for frame_key in ("adv", "chart_src", "raw_pg", "raw_t"):
         frame = item.get(frame_key)
-        val = _safe_latest_value(frame, col) if isinstance(frame, pd.DataFrame) else None
-        if val is not None:
-            return val
+        if isinstance(frame, pd.DataFrame):
+            for candidate in candidate_cols:
+                val = _safe_latest_value(frame, candidate)
+                if val is not None:
+                    return val
     return None
 
 
@@ -1003,23 +1015,31 @@ def _defensive_winner(player_frames: list[dict]) -> dict | None:
         stl = _latest_player_value(item, "STL/G") or 0.0
         trb = _latest_player_value(item, "TRB%") or 0.0
         drb = _latest_player_value(item, "DRB%") or 0.0
-        score = (blk * 2.2) + (stl * 1.8) + (trb * 0.12) + (drb * 0.08)
-        rows.append((item["name"], score))
+        score = (blk * 7.0) + (stl * 5.0) + (trb * 0.01) + (drb * 0.01)
+        rows.append((item["name"], score, blk, stl, trb, drb))
 
     if not rows:
         return None
 
     rows = sorted(rows, key=lambda x: x[1], reverse=True)
-    winner_name, winner_value = rows[0]
+    winner_name, winner_value, winner_blk, winner_stl, winner_trb, winner_drb = rows[0]
     runner_up = rows[1] if len(rows) > 1 else None
     margin = winner_value - runner_up[1] if runner_up is not None else None
-    why = f"{winner_name} grades out best from the blended defensive score"
+    why = (
+        f"{winner_name} grades out best from the blended defensive score with "
+        f"{winner_blk:.1f} BLK/G, {winner_stl:.1f} STL/G, {winner_trb:.1f} TRB%, and {winner_drb:.1f} DRB%."
+    )
     if len(rows) > 1:
-        trailing = ", ".join([f"{name} ({value:.1f})" for name, value in rows[1:]])
-        why += f", ahead of {trailing}."
+        trailing = ", ".join(
+            [
+                f"{name} ({blk:.1f} BLK/G, {stl:.1f} STL/G, {trb:.1f} TRB%, {drb:.1f} DRB%)"
+                for name, _, blk, stl, trb, drb in rows[1:]
+            ]
+        )
+        why += f" That puts them ahead of {trailing}."
     else:
         why += "."
-    why += " It weighs steals, blocks, total rebound %, and defensive rebound %."
+    why += " The formula now leans overwhelmingly on steals and blocks, with rebound percentages only used as a light tiebreaker."
     return {
         "label": "Best Defender",
         "winner": winner_name,
