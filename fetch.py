@@ -1,6 +1,7 @@
 # nba_app/fetch.py
 import time, random, hashlib, json
 from pathlib import Path
+import unicodedata
 import pandas as pd
 from requests.exceptions import ReadTimeout, ConnectionError
 import requests
@@ -21,6 +22,60 @@ _PLAYER_ALIASES = {
     "airious bailey": ["Ace Bailey"],
     "wemby": ["Victor Wembanyama"],
 }
+_LOCAL_PLAYER_METADATA_PATHS = [
+    Path(__file__).resolve().parent / "data" / "player_metadata.json",
+    Path("/Users/obinnaekezie/Downloads/player_metadata.json"),
+]
+
+
+def _normalize_player_name(name: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.strip().lower().split())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_local_player_metadata() -> list[dict]:
+    for path in _LOCAL_PLAYER_METADATA_PATHS:
+        try:
+            if path.exists():
+                payload = json.loads(path.read_text())
+                if isinstance(payload, list):
+                    return payload
+        except Exception:
+            continue
+    return []
+
+
+def _lookup_local_player_metadata(full_name: str | None) -> dict | None:
+    target = _normalize_player_name(full_name)
+    if not target:
+        return None
+    rows = _load_local_player_metadata()
+    for row in rows:
+        if _normalize_player_name(row.get("name")) == target:
+            return row
+    return None
+
+
+def get_local_player_metadata(full_name: str | None) -> dict | None:
+    return _lookup_local_player_metadata(full_name)
+
+
+def get_player_birthdate(player_id: int, player_name: str | None = None, player_source: str | None = None) -> str | None:
+    local_meta = _lookup_local_player_metadata(player_name)
+    if local_meta and local_meta.get("birthdate"):
+        return str(local_meta.get("birthdate"))
+    try:
+        info = get_player_info(player_id, player_name=player_name, player_source=player_source)
+    except Exception:
+        return None
+    if info is None or info.empty or "BIRTHDATE" not in info.columns:
+        return None
+    birthdate = info.loc[0, "BIRTHDATE"]
+    if pd.isna(birthdate) or str(birthdate).strip() in {"", "None", "nan"}:
+        return None
+    return str(birthdate)
 
 
 def _disk_cache_paths(namespace: str, key: str) -> tuple[Path, Path]:
@@ -336,6 +391,7 @@ def _get_balldontlie_player_info(full_name: str) -> pd.DataFrame:
     if not player:
         return pd.DataFrame()
 
+    local_meta = _lookup_local_player_metadata(full_name)
     team = player.get("team", {}) or {}
     row = {
         "DISPLAY_FIRST_LAST": f"{player.get('first_name', '')} {player.get('last_name', '')}".strip(),
@@ -349,7 +405,7 @@ def _get_balldontlie_player_info(full_name: str) -> pd.DataFrame:
         "COUNTRY": player.get("country"),
         "JERSEY": player.get("jersey_number"),
         "DRAFT_YEAR": player.get("draft_year"),
-        "BIRTHDATE": None,
+        "BIRTHDATE": (local_meta or {}).get("birthdate"),
     }
     df = pd.DataFrame([row])
     df.attrs["provider"] = "balldontlie"
@@ -998,8 +1054,46 @@ def get_player_info(player_id: int, player_name: str | None = None, player_sourc
             return pd.DataFrame()
         return _get_balldontlie_player_info(full_name)
 
+    def _enrich_missing_birthdate(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty or not nba_player_id:
+            if df is None or df.empty:
+                return df
+        if (
+            "BIRTHDATE" in df.columns
+            and not df["BIRTHDATE"].isna().all()
+            and ~df["BIRTHDATE"].astype(str).str.strip().isin(["", "None", "nan"]).all()
+        ):
+            return df
+        local_meta = _lookup_local_player_metadata(full_name)
+        if local_meta and local_meta.get("birthdate"):
+            merged = df.copy()
+            if "BIRTHDATE" not in merged.columns:
+                merged["BIRTHDATE"] = local_meta.get("birthdate")
+            else:
+                merged["BIRTHDATE"] = merged["BIRTHDATE"].where(
+                    merged["BIRTHDATE"].notna()
+                    & ~merged["BIRTHDATE"].astype(str).str.strip().isin(["", "None", "nan"]),
+                    local_meta.get("birthdate"),
+                )
+            return merged
+        if not nba_player_id:
+            return df
+        try:
+            nba_df = _fetch_nba()
+        except Exception:
+            nba_df = pd.DataFrame()
+        if nba_df is None or nba_df.empty:
+            return df
+        merged = df.copy()
+        for col in nba_df.columns:
+            if col not in merged.columns:
+                merged[col] = nba_df.iloc[0].get(col)
+        if "BIRTHDATE" in nba_df.columns:
+            merged["BIRTHDATE"] = nba_df.iloc[0].get("BIRTHDATE")
+        return merged
+
     try:
-        return _fetch_provider_then_cache(
+        df = _fetch_provider_then_cache(
             "player_info",
             f"{player_id}:{player_name or ''}:{player_source or ''}",
             [
@@ -1007,9 +1101,12 @@ def get_player_info(player_id: int, player_name: str | None = None, player_sourc
                 ("nba_api", _fetch_nba),
             ],
         )
+        return _enrich_missing_birthdate(df)
     except Exception as e:
         cached_df = _read_stale_cache_only("player_info", f"{player_id}:{player_name or ''}:{player_source or ''}")
-        return cached_df if cached_df is not None else _empty_result_with_error(e)
+        if cached_df is not None:
+            return _enrich_missing_birthdate(cached_df)
+        return _empty_result_with_error(e)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_team_totals_for_season(season: str) -> pd.DataFrame:

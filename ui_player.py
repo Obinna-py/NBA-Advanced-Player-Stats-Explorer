@@ -8,7 +8,7 @@ import html
 from datetime import datetime
 from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
-from fetch import get_player_career, get_player_info, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
+from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
@@ -24,10 +24,153 @@ def _friendly_ai_error_message(error: Exception) -> str:
     return "AI is unavailable right now. Please try again in a moment."
 
 
+def _player_scouting_report_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    return (
+        "You are an expert NBA scout and analyst. Build a clean player scouting report using only the provided stats.\n"
+        "Write in markdown with these exact sections: Offensive Identity, Shooting Profile, Playmaking, Defense, "
+        "Rebounding / Physicality, Weaknesses, Best Team Fit, Bottom Line.\n"
+        "Use specific stats throughout. Keep it detailed but readable for a serious basketball fan. "
+        "Do not mention any other players unless the provided stats directly require a comparison.\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
+def _player_ai_system_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    return (
+        "You are an expert NBA analyst writing for a curious basketball fan.\n\n"
+        "Answer questions using ONLY the stats provided below.\n"
+        "Write a fuller analysis, not a short answer.\n"
+        "Give 3-5 solid paragraphs unless the question is extremely narrow.\n"
+        "Be direct, but explain your reasoning clearly and tie claims to specific stats.\n"
+        "If some metrics are unavailable, do not refuse the question. Use the available metrics, explain what they show, and mention a missing stat only if it materially limits precision.\n"
+        "Do not claim a stat is missing if it appears in the structured stat packet.\n"
+        "Prefer the structured stat packet first, then use the season summary for extra context.\n"
+        "When useful, compare efficiency, volume, playmaking load, rebounding, and trends across seasons.\n"
+        "End with a short bottom-line takeaway sentence.\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n\n"
+        "Note: Some advanced metrics are estimates from team-context formulas."
+    )
+
+
+def render_player_scouting_report_page() -> None:
+    st.markdown("## 🧠 AI Player Scouting Report")
+    player_name = st.session_state.get("player_report_player_name") or "Selected Player"
+    st.caption(player_name)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_report", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_scouting_report_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No scouting report is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_ai_chat_page(model) -> None:
+    player_name = st.session_state.get("player_ai_chat_player_name") or "Selected Player"
+    chat_key = st.session_state.get("player_ai_chat_key")
+    st.markdown("## 💬 AI Player Chat")
+    st.caption(player_name)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_chat", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    if not model:
+        st.info("AI is unavailable right now.")
+        return
+
+    if not chat_key:
+        st.info("No AI chat is available yet. Start one from the player's Stats page first.")
+        return
+
+    chat_store = st.session_state.setdefault("player_ai_conversations", {})
+    history = chat_store.get(chat_key, [])
+    system_prompt = st.session_state.get("player_ai_system_prompt")
+
+    if st.button("Clear Conversation", key=f"clear_player_ai_page_{chat_key}", use_container_width=False):
+        chat_store[chat_key] = []
+        st.rerun()
+
+    if history:
+        for message in history:
+            role = "You" if message["role"] == "user" else "AI"
+            st.markdown(f"**{role}:** {message['content']}")
+    else:
+        st.caption("Start the conversation below.")
+
+    with st.form(key=f"player_ai_page_form_{chat_key}", clear_on_submit=True):
+        q = st.text_input("Ask a follow-up about this player:", key=f"player_ai_page_input_{chat_key}")
+        submitted = st.form_submit_button("Send", use_container_width=True)
+    if submitted and q and system_prompt:
+        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": q}]
+        with st.spinner("Analyzing…"):
+            try:
+                text = ai_generate_text(model, messages=messages, max_output_tokens=3072, temperature=0.7)
+                updated_history = history + [{"role": "user", "content": q}, {"role": "assistant", "content": text or "No response."}]
+                chat_store[chat_key] = updated_history[-10:]
+                st.rerun()
+            except Exception as e:
+                st.warning(_friendly_ai_error_message(e))
+                st.caption(f"Details: {type(e).__name__}")
+
+
 def _age_from_birthdate(iso_dt: str) -> int:
     birthdate = datetime.strptime(iso_dt.split('T')[0], "%Y-%m-%d")
     today = datetime.today()
     return today.year - birthdate.year - ((today.month, today.day) < (birthdate.month, birthdate.day))
+
+
+def _player_ai_chat_key(player: dict) -> str:
+    return f"{player.get('source','unknown')}:{player.get('id','unknown')}:{player.get('full_name','')}"
+
+
+def _birth_year_for_player(player: dict) -> int | None:
+    try:
+        birthdate = get_player_birthdate(player["id"], player_name=player.get("full_name"), player_source=player.get("source"))
+        if not birthdate:
+            return None
+        bdate = str(birthdate).split("T")[0]
+        return int(bdate[:4])
+    except Exception:
+        return None
+
+
+def _add_season_start(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "SEASON_ID" not in df.columns:
+        return df
+    out = df.copy()
+    if "SEASON_START" not in out.columns:
+        out["SEASON_START"] = out["SEASON_ID"].astype(str).str[:4].astype(int)
+    return out
+
+
+def _add_age_column(df: pd.DataFrame, birth_year: int | None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "SEASON_START" not in out.columns:
+        out["AGE_APPROX"] = np.nan
+        return out
+    if birth_year is None:
+        out["AGE_APPROX"] = np.nan
+        return out
+    out["AGE_APPROX"] = out["SEASON_START"].astype(int) - int(birth_year)
+    return out
 
 def info_tab(player):
     if player.get("source") == "balldontlie":
@@ -610,6 +753,8 @@ def stats_tab(player, model):
 
     with main_col:
         if display_adv is not None and not display_adv.empty:
+            birth_year = _birth_year_for_player(player)
+            display_adv = _add_age_column(_add_season_start(display_adv), birth_year)
             stats_df, number_cols, percent_cols = _make_readable_stats_table(display_adv)
 
             render_html_table(
@@ -771,38 +916,67 @@ def stats_tab(player, model):
                         st.session_state["ai_question"] = idea
                         st.rerun()
 
-            with st.expander("Ask the AI Assistant", expanded=True):
+            with st.expander("AI Scouting Report", expanded=False):
                 if model:
-                    q = st.text_input("Ask something about this player:", key="ai_question")
-                    if q:
+                    st.caption("Generate a dedicated scouting report page for this player.")
+                    if st.button("Generate Scouting Report", key="generate_player_scouting_report", use_container_width=True):
                         pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
                         adv_for_summary = adv if adv is not None else pd.DataFrame()
-                        summary = generate_player_summary(player['full_name'], pergame_for_summary, adv_for_summary)
-                        stat_packet = build_ai_stat_packet(player['full_name'], pergame_for_summary, adv_for_summary)
-                        prompt = (
-                            f"You are an expert NBA analyst writing for a curious basketball fan.\n\n"
-                            f"Answer the question using ONLY the stats provided below.\n"
-                            f"Write a fuller analysis, not a short answer.\n"
-                            f"Give 3-5 solid paragraphs unless the question is extremely narrow.\n"
-                            f"Be direct, but explain your reasoning clearly and tie claims to specific stats.\n"
-                            f"If some metrics are unavailable, do not refuse the question. Use the available metrics, explain what they show, and mention a missing stat only if it materially limits precision.\n"
-                            f"Do not claim a stat is missing if it appears in the structured stat packet.\n"
-                            f"Prefer the structured stat packet first, then use the season summary for extra context.\n"
-                            f"When useful, compare efficiency, volume, playmaking load, rebounding, and trends across seasons.\n"
-                            f"End with a short bottom-line takeaway sentence.\n\n"
-                            f"Structured stat packet:\n{stat_packet}\n\n"
-                            f"Season summary:\n{summary}\n\n"
-                            f"Question: {q}\n\n"
-                            f"Note: Some advanced metrics are estimates from team-context formulas."
-                        )
-                        with st.spinner("Analyzing…"):
+                        prompt = _player_scouting_report_prompt(player["full_name"], pergame_for_summary, adv_for_summary)
+                        with st.spinner("Building scouting report…"):
                             try:
-                                text = ai_generate_text(model, prompt, max_output_tokens=3072, temperature=0.7)
-                                st.markdown("### 🧠 AI Analysis")
-                                st.write(text or "No response.")
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.6)
+                                st.session_state["player_scouting_report_output"] = text or "No response."
+                                st.session_state["player_report_player_name"] = player["full_name"]
+                                st.session_state["player_report_mode"] = "scouting"
+                                st.rerun()
                             except Exception as e:
                                 st.warning(_friendly_ai_error_message(e))
                                 st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_scouting_report_output"):
+                        st.caption("A scouting report is already available.")
+                        if st.button("Open Report Page", key="open_player_scouting_report_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "scouting"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Ask the AI Assistant", expanded=True):
+                if model:
+                    chat_store = st.session_state.setdefault("player_ai_conversations", {})
+                    chat_key = _player_ai_chat_key(player)
+                    history = chat_store.get(chat_key, [])
+                    pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                    adv_for_summary = adv if adv is not None else pd.DataFrame()
+                    system_prompt = _player_ai_system_prompt(player['full_name'], pergame_for_summary, adv_for_summary)
+                    st.session_state["player_ai_system_prompt"] = system_prompt
+                    st.session_state["player_ai_chat_key"] = chat_key
+                    st.session_state["player_ai_chat_player_name"] = player["full_name"]
+
+                    if history:
+                        st.caption("Continue the player conversation on its own page.")
+                        if st.button("Open AI Chat Page", key=f"open_player_ai_chat_{chat_key}", use_container_width=True):
+                            st.session_state["player_report_mode"] = "chat"
+                            st.rerun()
+                    else:
+                        with st.form(key=f"player_ai_form_{chat_key}", clear_on_submit=True):
+                            q = st.text_input("Ask something about this player:", key=f"ai_question_{chat_key}")
+                            submitted = st.form_submit_button("Open AI Chat", use_container_width=True)
+                        if submitted and q:
+                            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": q}]
+                            with st.spinner("Analyzing…"):
+                                try:
+                                    text = ai_generate_text(model, messages=messages, max_output_tokens=3072, temperature=0.7)
+                                    chat_store[chat_key] = [{"role": "user", "content": q}, {"role": "assistant", "content": text or "No response."}]
+                                    st.session_state["player_report_mode"] = "chat"
+                                    st.rerun()
+                                except Exception as e:
+                                    st.warning(_friendly_ai_error_message(e))
+                                    st.caption(f"Details: {type(e).__name__}")
                 else:
                     if AI_SETUP_ERROR:
                         st.info("AI is unavailable in this deployment right now.")

@@ -550,7 +550,7 @@ def compact_player_context(df: pd.DataFrame) -> dict:
 
 _DISPLAY_PRIORITY = [
     # identity/context
-    "SEASON_ID", "TEAM_ABBREVIATION",
+    "SEASON_ID", "AGE_APPROX", "TEAM_ABBREVIATION",
     # per-game
     "GP", "MPG", "PPG", "RPG", "APG", "SPG", "BPG", "TPG",
     "3PA/G", "2PA/G",

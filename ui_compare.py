@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import json
 import html
@@ -15,7 +16,7 @@ except Exception:
     st_searchbox = None
 
 # --- project imports
-from fetch import get_player_career, get_head_to_head_games, get_player_info, search_players, get_nba_headshot_url
+from fetch import get_player_career, get_head_to_head_games, get_player_info, get_player_birthdate, search_players, get_nba_headshot_url
 from metrics import (
     compute_full_advanced_stats,
     add_per_game_columns,
@@ -23,6 +24,7 @@ from metrics import (
     generate_player_summary,
     compact_player_context,
     compute_player_percentile_context,
+    detect_player_archetype,
     metric_public_cols,          # returns a filtered/ordered list of columns for display
     order_columns_for_display,
     compute_league_shooting_table    # preferred display ordering (PPG/RPG/APG → TS% → etc.)
@@ -61,6 +63,8 @@ _COMPARE_SEARCHBOX_STYLE_OVERRIDES = {
 
 
 STAT_TOOLTIPS = {
+    "Age": "Age: the player's approximate age during that season window.",
+    "AGE": "Age: the player's approximate age during that season window.",
     "PPG": "Points Per Game: the average number of points a player scores each game.",
     "RPG": "Rebounds Per Game: the average number of rebounds a player grabs each game.",
     "APG": "Assists Per Game: the average number of assists a player records each game.",
@@ -150,6 +154,50 @@ def render_stat_text(text: str, *, small: bool = False) -> None:
         }}
         </style>
         <div class="{cls}">{annotate_stat_terms(text)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_verdict_card(label: str, winner: str, delta: str | None) -> None:
+    delta_html = f'<div class="verdict-card-delta">{html.escape(delta)}</div>' if delta else ""
+    st.markdown(
+        f"""
+        <style>
+        .verdict-card {{
+          padding: 2px 0 0 0;
+        }}
+        .verdict-card-label {{
+          color: rgba(255,255,255,0.68);
+          font-size: 0.82rem;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }}
+        .verdict-card-winner {{
+          color: #f9fafb;
+          font-size: 1.18rem;
+          font-weight: 700;
+          line-height: 1.2;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          margin-bottom: 8px;
+        }}
+        .verdict-card-delta {{
+          display: inline-block;
+          background: rgba(34, 197, 94, 0.14);
+          color: #86efac;
+          border-radius: 999px;
+          padding: 2px 8px;
+          font-size: 0.8rem;
+          font-weight: 700;
+          margin-bottom: 6px;
+        }}
+        </style>
+        <div class="verdict-card">
+          <div class="verdict-card-label">{html.escape(label)}</div>
+          <div class="verdict-card-winner">{html.escape(winner)}</div>
+          {delta_html}
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -476,6 +524,7 @@ def _make_readable_stats_table(df: pd.DataFrame):
     rename = {
         "SEASON_ID": "Season",
         "TEAM_ABBREVIATION": "Team",
+        "AGE_APPROX": "Age",
 
         # per-game (more explicit)
         "MPG": "MIN/G",
@@ -511,7 +560,7 @@ def _make_readable_stats_table(df: pd.DataFrame):
 
     # 4) Preferred order (only keep those that actually exist)
     preferred = [
-        "Season", "Team",
+        "Season", "Team", "Age",
         "MIN/G", "PTS/G", "REB/G", "AST/G", "STL/G", "BLK/G", "TOV/G",
         "3PA/G", "2PA/G",
         "FG%", "3P%", "FT%", "TS%", "eFG%",
@@ -559,22 +608,43 @@ def _career_index(df: pd.DataFrame) -> pd.DataFrame:
     out["CAREER_YEAR"] = np.arange(1, len(out) + 1)
     return out
 
-def _get_birth_year(player_id: int) -> int | None:
+def _get_birth_year(player_id: int, player_name: str | None = None, player_source: str | None = None) -> int | None:
     """Year-only (approx) for season-level age alignment."""
     try:
-        info = get_player_info(player_id)
-        bdate = str(info.loc[0, "BIRTHDATE"]).split("T")[0]
+        birthdate = get_player_birthdate(player_id, player_name=player_name, player_source=player_source)
+        if not birthdate:
+            return None
+        bdate = str(birthdate).split("T")[0]
         return int(bdate[:4])
     except Exception:
         return None
 
 def _add_age_column(df: pd.DataFrame, birth_year: int | None) -> pd.DataFrame:
     """Adds AGE_APPROX = SEASON_START - birth_year."""
-    if df is None or df.empty or "SEASON_START" not in df.columns or birth_year is None:
+    if df is None or df.empty:
         return df
     out = df.copy()
+    if "SEASON_START" not in out.columns:
+        out["AGE_APPROX"] = np.nan
+        return out
+    if birth_year is None:
+        out["AGE_APPROX"] = np.nan
+        return out
     out["AGE_APPROX"] = out["SEASON_START"].astype(int) - int(birth_year)
     return out
+
+
+def _current_age_for_player(player_id: int, player_name: str | None = None, player_source: str | None = None) -> int | None:
+    try:
+        birthdate = get_player_birthdate(player_id, player_name=player_name, player_source=player_source)
+        if not birthdate:
+            return None
+        bdate = str(birthdate).split("T")[0]
+        birthdate = datetime.strptime(bdate, "%Y-%m-%d")
+        today = datetime.today()
+        return today.year - birthdate.year - ((today.month, today.day) < (birthdate.month, birthdate.day))
+    except Exception:
+        return None
 
 def _align_for_chart(src1: pd.DataFrame, src2: pd.DataFrame, p1: str, p2: str, stat: str, mode: str) -> pd.DataFrame:
     """
@@ -1205,13 +1275,69 @@ def _render_comparison_verdict_cards(player_frames: list[dict], scope_label: str
         f"Quick winners from the selected compare view ({scope_label}), evaluated across all {len(player_frames)} selected players.",
         small=True,
     )
+    st.markdown(
+        """
+        <style>
+        .verdict-card {
+            background: rgba(15, 23, 42, 0.55);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 0.95rem 1rem 0.85rem 1rem;
+            min-height: 148px;
+            margin-bottom: 0.9rem;
+        }
+        .verdict-card-label {
+            color: rgba(255,255,255,0.72);
+            font-size: 0.82rem;
+            font-weight: 600;
+            margin-bottom: 0.45rem;
+            line-height: 1.2;
+        }
+        .verdict-card-winner {
+            color: #f9fafb;
+            font-size: 1.05rem;
+            font-weight: 700;
+            line-height: 1.25;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            margin-bottom: 0.55rem;
+        }
+        .verdict-card-delta {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.18rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(34, 197, 94, 0.12);
+            color: #86efac;
+            font-size: 0.78rem;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     cols = st.columns(min(3, len(verdicts)))
     for idx, verdict in enumerate(verdicts):
         with cols[idx % len(cols)]:
             delta = f"+{verdict['margin']:.1f}" if verdict["margin"] is not None else None
             if delta and "%" in verdict["display"]:
                 delta += " pts"
-            st.metric(verdict["label"], verdict["winner"], delta=delta)
+            label_html = html.escape(verdict["label"])
+            winner_html = html.escape(verdict["winner"])
+            delta_html = f'<div class="verdict-card-delta">↑ {html.escape(delta)}</div>' if delta else ""
+            st.markdown(
+                f"""
+                <div class="verdict-card">
+                    <div class="verdict-card-label">{label_html}</div>
+                    <div class="verdict-card-winner">{winner_html}</div>
+                    {delta_html}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             render_stat_text(f"{verdict['display']} in the current compare view", small=True)
             if verdict.get("why"):
                 render_stat_text(verdict["why"], small=True)
@@ -1266,6 +1392,520 @@ def _render_percentile_compare_view(player_frames: list[dict], scope_label: str)
             percent_cols=["Percentile"],
             max_height_px=360,
         )
+
+
+def _render_visual_overlap_charts(player_frames: list[dict], scope_label: str) -> None:
+    st.markdown("### 🎯 Visual Overlap Charts")
+    render_stat_text(
+        f"A quick visual overlap snapshot for the selected compare view ({scope_label}).",
+        small=True,
+    )
+
+    radar_metrics = ["PPG", "RPG", "APG", "TS%", "3P%", "BLK/G", "STL/G"]
+    radar_rows = []
+    for item in player_frames:
+        row = {"Player": item["name"]}
+        has_any = False
+        for metric in radar_metrics:
+            value = _latest_player_value(item, metric)
+            if value is None or pd.isna(value):
+                row[metric] = np.nan
+            else:
+                row[metric] = float(value)
+                has_any = True
+        if has_any:
+            radar_rows.append(row)
+
+    if not radar_rows:
+        st.info("No shared stat profile is available to build overlap charts right now.")
+        return
+
+    radar_df = pd.DataFrame(radar_rows)
+    normalized = radar_df.copy()
+    for metric in radar_metrics:
+        col = pd.to_numeric(normalized[metric], errors="coerce")
+        valid = col.dropna()
+        if valid.empty:
+            normalized[metric] = 0.0
+            continue
+        min_val = valid.min()
+        max_val = valid.max()
+        if max_val == min_val:
+            normalized[metric] = 100.0
+        else:
+            normalized[metric] = ((col - min_val) / (max_val - min_val) * 100.0).fillna(0.0)
+
+    top_row = normalized.melt(id_vars=["Player"], var_name="Metric", value_name="Score")
+    bottom_metrics = ["PPG", "RPG", "APG", "TS%", "3P%"]
+    bottom_df = radar_df[["Player"] + bottom_metrics].melt(id_vars=["Player"], var_name="Metric", value_name="Value")
+
+    top_col, bottom_col = st.columns([1.15, 1], gap="large")
+    with top_col:
+        radar_fig = go.Figure()
+        for player in normalized["Player"]:
+            player_slice = top_row[top_row["Player"] == player]
+            theta = player_slice["Metric"].tolist()
+            r = player_slice["Score"].tolist()
+            if theta:
+                theta = theta + [theta[0]]
+                r = r + [r[0]]
+            radar_fig.add_trace(
+                go.Scatterpolar(
+                    r=r,
+                    theta=theta,
+                    fill="toself",
+                    name=player,
+                    opacity=0.5,
+                )
+            )
+        radar_fig.update_layout(
+            title="Player DNA Overlap",
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=True,
+            margin=dict(l=30, r=30, t=50, b=30),
+        )
+        st.plotly_chart(radar_fig, use_container_width=True)
+
+    with bottom_col:
+        overlap_fig = px.bar(
+            bottom_df,
+            x="Metric",
+            y="Value",
+            color="Player",
+            barmode="group",
+            title="Core Stat Snapshot",
+        )
+        overlap_fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), legend_title="Player")
+        st.plotly_chart(overlap_fig, use_container_width=True)
+
+
+def _render_strengths_weaknesses_matrix(player_frames: list[dict], scope_label: str) -> None:
+    categories = [
+        ("Scoring", "PPG", 75.0, 35.0),
+        ("Efficiency", "TS%", 75.0, 40.0),
+        ("Playmaking", "APG", 75.0, 40.0),
+        ("Rebounding", "RPG", 75.0, 35.0),
+        ("Shooting", "3P%", 70.0, 40.0),
+        ("Defense", "BLK/G", 75.0, 35.0),
+    ]
+    rows = []
+    for item in player_frames:
+        latest_season_id = str(item["adv"].iloc[-1].get("SEASON_ID", "")) if item.get("adv") is not None and not item["adv"].empty else ""
+        pct_df = compute_player_percentile_context(item["name"], latest_season_id, item["adv"]) if latest_season_id else pd.DataFrame()
+        pct_lookup = {}
+        if pct_df is not None and not pct_df.empty:
+            for _, row in pct_df.iterrows():
+                metric = row.get("Metric")
+                pct = pd.to_numeric(row.get("Percentile"), errors="coerce")
+                if metric and pd.notna(pct):
+                    pct_lookup[str(metric)] = float(pct)
+
+        strengths = []
+        neutral = []
+        weaknesses = []
+        for label, metric, strong_cutoff, weak_cutoff in categories:
+            pct_val = pct_lookup.get(metric)
+            if pct_val is None:
+                continue
+            metric_value = _latest_player_value(item, metric)
+            detail = f"{label} ({metric}: {metric_value:.1f})" if metric_value is not None and not pd.isna(metric_value) else label
+            if pct_val >= strong_cutoff:
+                strengths.append(detail)
+            elif pct_val <= weak_cutoff:
+                weaknesses.append(detail)
+            else:
+                neutral.append(detail)
+
+        rows.append({
+            "Player": item["name"],
+            "Strengths": " | ".join(strengths) if strengths else "—",
+            "Neutral": " | ".join(neutral[:4]) if neutral else "—",
+            "Weaknesses": " | ".join(weaknesses) if weaknesses else "—",
+        })
+
+    if not rows:
+        return
+
+    st.markdown("### 🧱 Strengths and Weaknesses Matrix")
+    render_stat_text(
+        f"A fast read on where each player clearly wins, holds steady, or lags in the selected compare view ({scope_label}).",
+        small=True,
+    )
+    matrix_df = pd.DataFrame(rows)
+    render_html_table(matrix_df, max_height_px=340)
+
+
+def _render_shot_profile_compare(player_frames: list[dict], scope_label: str) -> None:
+    rows = []
+    for item in player_frames:
+        rows.append({
+            "Player": item["name"],
+            "3PA/G": _latest_player_value(item, "3PA/G"),
+            "2PA/G": _latest_player_value(item, "2PA/G"),
+            "3P%": _latest_player_value(item, "3P%"),
+            "FG%": _latest_player_value(item, "FG%"),
+            "FT Rate": _latest_player_value(item, "FTr"),
+            "Pts/Shot": _latest_player_value(item, "Pts/Shot") or _latest_player_value(item, "PPS"),
+            "TS%": _latest_player_value(item, "TS%"),
+            "USG%": _latest_player_value(item, "USG%"),
+        })
+
+    shot_df = pd.DataFrame(rows)
+    if shot_df.empty:
+        return
+
+    st.markdown("### 🎯 Shot Profile / Offensive Style Compare")
+    render_stat_text(
+        f"How these players get their offense in the selected compare view ({scope_label}).",
+        small=True,
+    )
+
+    display_df = shot_df.copy()
+    render_html_table(
+        display_df,
+        number_cols=["3PA/G", "2PA/G", "FT Rate", "Pts/Shot"],
+        percent_cols=["3P%", "FG%", "TS%", "USG%"],
+        max_height_px=280,
+    )
+
+    plot_df = shot_df.melt(
+        id_vars=["Player"],
+        value_vars=["3PA/G", "2PA/G", "FT Rate", "Pts/Shot", "TS%", "USG%"],
+        var_name="Metric",
+        value_name="Value",
+    )
+    plot_df["Value"] = pd.to_numeric(plot_df["Value"], errors="coerce")
+    plot_df = plot_df.dropna(subset=["Value"])
+    if not plot_df.empty:
+        fig = px.bar(
+            plot_df,
+            x="Metric",
+            y="Value",
+            color="Player",
+            barmode="group",
+            title="Offensive Style Snapshot",
+        )
+        fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), legend_title="Player")
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_archetype_compare_view(player_frames: list[dict], scope_label: str) -> None:
+    archetypes = []
+    for item in player_frames:
+        adv = item.get("adv")
+        if adv is None or adv.empty:
+            continue
+        latest_season_id = str(adv.iloc[-1].get("SEASON_ID", ""))
+        percentile_df = compute_player_percentile_context(item["name"], latest_season_id, adv) if latest_season_id else pd.DataFrame()
+        archetype = detect_player_archetype(item["name"], adv, percentile_df)
+        if archetype:
+            archetypes.append((item["name"], archetype))
+
+    if not archetypes:
+        return
+
+    st.markdown("### 🧩 Archetype Compare")
+    render_stat_text(
+        f"Role and style identity for the selected compare view ({scope_label}).",
+        small=True,
+    )
+    cols = st.columns(min(3, len(archetypes)))
+    for idx, (name, archetype) in enumerate(archetypes):
+        with cols[idx % len(cols)]:
+            primary = archetype.get("primary", "—")
+            secondary = archetype.get("secondary") or "—"
+            style_tags = ", ".join(archetype.get("style_tags", [])) or "—"
+            impact_tags = ", ".join(archetype.get("impact_tags", [])) or "—"
+            primary_desc = archetype.get("primary_description") or ""
+            secondary_desc = archetype.get("secondary_description") or ""
+            confidence = archetype.get("confidence", 0.0)
+            with st.container(border=True):
+                st.markdown(f"**{name}**")
+                st.write(f"**Primary:** {primary}")
+                if primary_desc:
+                    st.caption(primary_desc)
+                st.write(f"**Secondary:** {secondary}")
+                if secondary_desc:
+                    st.caption(secondary_desc)
+                st.write("**Style Tags:** " + style_tags)
+                st.write("**Impact Tags:** " + impact_tags)
+                st.caption(f"Confidence: {confidence:.2f}")
+            for line in archetype.get("evidence", [])[:2]:
+                st.caption(line)
+
+
+def _build_compare_ai_summaries(player_frames: list[dict]) -> list[str]:
+    summaries = []
+    for item in player_frames:
+        age = _current_age_for_player(
+            item["player"]["id"],
+            player_name=item["player"].get("full_name"),
+            player_source=item["player"].get("source"),
+        )
+        summary = generate_player_summary(
+            item["name"],
+            item["raw_pg"] if not item["raw_pg"].empty else item["adv"],
+            item["adv"],
+        )
+        age_line = f"Current age: {age}.\n" if age is not None else ""
+        summaries.append(f"{item['name']}:\n{age_line}{summary}")
+    return summaries
+
+
+def _compare_ai_chat_key(player_frames: list[dict]) -> str:
+    names = sorted(item["name"] for item in player_frames)
+    return "|".join(names)
+
+
+def _build_full_career_ai_summaries(player_frames: list[dict]) -> list[str]:
+    summaries = []
+    for item in player_frames:
+        age = _current_age_for_player(
+            item["player"]["id"],
+            player_name=item["player"].get("full_name"),
+            player_source=item["player"].get("source"),
+        )
+        raw_src = item["full_raw_pg"] if item.get("full_raw_pg") is not None and not item["full_raw_pg"].empty else item["full_adv"]
+        adv_src = item["full_adv"] if item.get("full_adv") is not None and not item["full_adv"].empty else item["adv"]
+        summary = generate_player_summary(
+            item["name"],
+            raw_src,
+            adv_src,
+        )
+        age_line = f"Current age: {age}.\n" if age is not None else ""
+        summaries.append(f"{item['name']}:\n{age_line}{summary}")
+    return summaries
+
+
+def _compare_scouting_report_prompt(player_frames: list[dict], scope_label: str) -> str:
+    names = ", ".join(item["name"] for item in player_frames)
+    exact_count = len(player_frames)
+    summaries = _build_compare_ai_summaries(player_frames)
+    return (
+        "You are an expert NBA scout and analyst. Build a side-by-side scouting report for the selected players "
+        f"using the selected compare view ({scope_label}). Use only the provided player stat summaries. "
+        f"You must only discuss these {exact_count} players: {names}. Do not mention, rank, compare, or reference any other NBA players. "
+        "For each player, write concise markdown with these exact subheads: Offensive Identity, Shooting Profile, "
+        "Playmaking, Defense, Rebounding / Physicality, Weaknesses, Best Team Fit. Use specific stats in every player section. "
+        "After the player-by-player sections, add a short 'Best At A Glance' section with quick winners for scoring, playmaking, "
+        "shooting, defense, and overall offensive engine. Keep it sharp and readable.\n\n"
+        + "\n\n".join(summaries)
+        + f"\n\nPlayers: {names}"
+    )
+
+
+def _build_around_prompt(player_frames: list[dict], scope_label: str, lens: str) -> str:
+    summaries = _build_full_career_ai_summaries(player_frames)
+    names = [item["name"] for item in player_frames]
+    joined_names = ", ".join(names)
+    exact_count = len(names)
+    lens_instruction = {
+        "Long-Term Franchise Pick": "prioritize long-term build-around value, sustainable offensive creation, scalable defense, and franchise ceiling",
+        "Win-Now Contender": "prioritize immediate high-level impact for a contender right now",
+        "Balanced": "balance current value with long-term build-around value",
+    }.get(lens, "balance current value with long-term build-around value")
+    return (
+        "You are an expert NBA team-building analyst. Decide who you would rather build around from this player group. "
+        f"Ignore the page's temporary comparison slice and use each player's full career body of work for this decision. {lens_instruction}. "
+        f"You must rank exactly these {exact_count} selected players and nobody else: {joined_names}. "
+        "Do not mention or rank any players outside this selected group. "
+        "Return exactly one numbered ranking entry per selected player, then a Bottom Line section. "
+        "Then provide a short verdict for each player with concrete stat reasons. "
+        "End with a 'Bottom Line' paragraph naming the best single choice and why. "
+        "If age or contract info is missing, say so briefly and lean on the provided stats and archetype-style implications instead. "
+        "If you cannot support a claim from the provided player summaries, do not invent extra players or extra data.\n\n"
+        + "\n\n".join(summaries)
+        + f"\n\nLens: {lens}"
+    )
+
+
+def _compare_debate_prompt(player_frames: list[dict], scope_label: str, lens: str, custom_focus: str = "") -> str:
+    summaries = _build_compare_ai_summaries(player_frames)
+    names = [item["name"] for item in player_frames]
+    joined_names = ", ".join(names)
+    exact_count = len(names)
+    lens_instruction = {
+        "Best Overall Player": "argue who is the strongest all-around player in this selected compare view",
+        "Playoff Series": "argue who you would trust most in a playoff series in this selected compare view",
+        "Best Offensive Engine": "argue who is the strongest offensive engine in this selected compare view",
+        "Best Defensive Piece": "argue who brings the strongest defensive value in this selected compare view",
+        "Best Second Star": "argue who scales best as a second star next to another elite player in this selected compare view",
+    }.get(lens, "argue which player has the strongest case in this selected compare view")
+    custom_line = f"Additional debate framing from the user: {custom_focus.strip()}.\n" if custom_focus.strip() else ""
+    return (
+        "You are moderating a sharp NBA debate. Use only the selected players and only the provided stat summaries. "
+        f"You must only discuss these {exact_count} players: {joined_names}. Do not mention or compare any other NBA players. "
+        f"{lens_instruction}. "
+        "Write in markdown with these exact sections: Opening Case, Best Case For Each Player, Strongest Counter-Arguments, Debate Verdict, Bottom Line. "
+        "In 'Best Case For Each Player', give every selected player their own subheading and 2-4 concrete stat-backed points. "
+        "In 'Strongest Counter-Arguments', challenge each selected player with 1-3 stat-backed weaknesses or limitations. "
+        "In 'Debate Verdict', choose a winner and explain why they win this exact debate lens. "
+        "Keep it readable, direct, and specific.\n\n"
+        + custom_line
+        + "\n\n".join(summaries)
+        + f"\n\nPlayers: {joined_names}\nDebate lens: {lens}\nCompare view: {scope_label}"
+    )
+
+
+def _compare_debate_chat_key(player_frames: list[dict], scope_label: str, lens: str) -> str:
+    names = sorted(item["name"] for item in player_frames)
+    return f"{scope_label}|{lens}|{'|'.join(names)}"
+
+
+def render_compare_scouting_report_page() -> None:
+    st.markdown("## 🧠 Side-by-Side AI Scouting Report")
+    compare_names = st.session_state.get("compare_report_players") or []
+    compare_view = st.session_state.get("compare_report_view") or "Compare"
+    if compare_names:
+        st.caption(f"Players: {', '.join(compare_names)}")
+    st.caption(f"Report scope: {compare_view}")
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Compare", key="back_to_compare_from_report", use_container_width=True):
+            st.session_state["compare_report_mode"] = None
+            st.session_state["requested_active_view"] = "🤝 Compare Players"
+            st.rerun()
+
+    report = st.session_state.get("compare_scouting_report_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No scouting report is available right now. Generate one from the Compare tab first.")
+
+
+def render_compare_debate_page(model) -> None:
+    st.markdown("## 🥊 AI Debate Mode")
+    compare_names = st.session_state.get("compare_debate_players") or []
+    compare_view = st.session_state.get("compare_debate_view") or "Compare"
+    compare_lens = st.session_state.get("compare_debate_lens") or "Best Overall Player"
+    if compare_names:
+        st.caption(f"Players: {', '.join(compare_names)}")
+    st.caption(f"Debate scope: {compare_view}")
+    st.caption(f"Debate lens: {compare_lens}")
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Compare", key="back_to_compare_from_debate", use_container_width=True):
+            st.session_state["compare_report_mode"] = None
+            st.session_state["requested_active_view"] = "🤝 Compare Players"
+            st.rerun()
+
+    if not model:
+        st.info("AI is unavailable right now.")
+        return
+
+    chat_key = st.session_state.get("compare_debate_chat_key")
+    system_prompt = st.session_state.get("compare_debate_system_prompt")
+    chat_store = st.session_state.setdefault("compare_debate_conversations", {})
+    history = chat_store.get(chat_key, []) if chat_key else []
+
+    if st.button("Clear Debate Conversation", key=f"clear_compare_debate_{chat_key or 'empty'}", use_container_width=False):
+        if chat_key:
+            chat_store[chat_key] = []
+        st.session_state["compare_debate_output"] = None
+        st.rerun()
+
+    if history:
+        for message in history:
+            role = "You" if message["role"] == "user" else "AI"
+            st.markdown(f"**{role}:** {message['content']}")
+    elif st.session_state.get("compare_debate_output"):
+        st.markdown(st.session_state["compare_debate_output"])
+    else:
+        st.info("No debate is available right now. Generate one from the Compare tab first.")
+
+    if not chat_key or not system_prompt:
+        return
+
+    with st.form(key=f"compare_debate_followup_form_{chat_key}", clear_on_submit=True):
+        q = st.text_input(
+            "Ask a follow-up about this debate:",
+            key=f"compare_debate_followup_input_{chat_key}",
+        )
+        submitted = st.form_submit_button("Send Follow-Up", use_container_width=True)
+    if submitted and q:
+        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": q}]
+        with st.spinner("Continuing the debate…"):
+            try:
+                text = ai_generate_text(model, messages=messages, max_output_tokens=4096, temperature=0.7)
+                updated_history = history + [{"role": "user", "content": q}, {"role": "assistant", "content": text or "No response."}]
+                chat_store[chat_key] = updated_history[-12:]
+                st.rerun()
+            except Exception as e:
+                st.warning(_friendly_ai_error_message(e))
+                st.caption(f"Details: {type(e).__name__}")
+
+
+def _compare_ai_system_prompt(player_frames: list[dict]) -> str:
+    summaries = []
+    for item in player_frames:
+        summary = generate_player_summary(
+            item["name"],
+            item["raw_pg"] if not item["raw_pg"].empty else item["adv"],
+            item["adv"],
+        )
+        summaries.append(f"{item['name']}:\n{summary}")
+    return (
+        "You are an expert NBA analyst. Compare the selected players strictly using the provided season tables. "
+        "Give a fuller answer, use specific stats to support claims, and when helpful rank the players for the question being asked. "
+        "Lean on TS%, eFG%, PPS, 3PAr, FTr, USG% (true), AST%, TRB%, per-game output, and per-36 trends. "
+        "If data is missing for a metric, acknowledge it and use available proxies.\n\n"
+        + "\n\n".join(summaries)
+    )
+
+
+def render_compare_ai_chat_page(model) -> None:
+    compare_names = st.session_state.get("compare_ai_chat_players") or []
+    chat_key = st.session_state.get("compare_ai_chat_key")
+    st.markdown("## 💬 AI Compare Chat")
+    if compare_names:
+        st.caption(f"Players: {', '.join(compare_names)}")
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Compare", key="back_to_compare_from_chat", use_container_width=True):
+            st.session_state["compare_report_mode"] = None
+            st.session_state["requested_active_view"] = "🤝 Compare Players"
+            st.rerun()
+
+    if not model:
+        st.info("AI is unavailable right now.")
+        return
+
+    if not chat_key:
+        st.info("No compare AI chat is available yet. Start one from the Compare tab first.")
+        return
+
+    chat_store = st.session_state.setdefault("compare_ai_conversations", {})
+    history = chat_store.get(chat_key, [])
+    system_prompt = st.session_state.get("compare_ai_system_prompt")
+
+    if st.button("Clear Conversation", key=f"clear_compare_ai_page_{chat_key}", use_container_width=False):
+        chat_store[chat_key] = []
+        st.rerun()
+
+    if history:
+        for message in history:
+            role = "You" if message["role"] == "user" else "AI"
+            st.markdown(f"**{role}:** {message['content']}")
+    else:
+        st.caption("Start the conversation below.")
+
+    with st.form(key=f"compare_ai_page_form_{chat_key}", clear_on_submit=True):
+        q = st.text_input("Ask a follow-up about these players:", key=f"compare_ai_page_input_{chat_key}")
+        submitted = st.form_submit_button("Send", use_container_width=True)
+    if submitted and q and system_prompt:
+        messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": q}]
+        with st.spinner("Analyzing…"):
+            try:
+                text = ai_generate_text(model, messages=messages, max_output_tokens=4096, temperature=0.6)
+                updated_history = history + [{"role": "user", "content": q}, {"role": "assistant", "content": text or "No response."}]
+                chat_store[chat_key] = updated_history[-10:]
+                st.rerun()
+            except Exception as e:
+                st.warning(_friendly_ai_error_message(e))
+                st.caption(f"Details: {type(e).__name__}")
 
 
 # -------------------------
@@ -1475,6 +2115,14 @@ def render_compare_tab(primary_player: dict, model=None):
         scoped_raw_pg = _slice_compare_scope(item["full_raw_pg"], selected_compare_view, item.get("phases"))
         scoped_raw_t = _slice_compare_scope(item["full_raw_t"], selected_compare_view, item.get("phases"))
         scoped_adv = _slice_compare_scope(item["full_adv"], selected_compare_view, item.get("phases"))
+        birth_year = _get_birth_year(
+            item["player"]["id"],
+            player_name=item["player"].get("full_name"),
+            player_source=item["player"].get("source"),
+        )
+        scoped_raw_pg = _add_age_column(_add_season_start(scoped_raw_pg), birth_year)
+        scoped_raw_t = _add_age_column(_add_season_start(scoped_raw_t), birth_year)
+        scoped_adv = _add_age_column(_add_season_start(scoped_adv), birth_year)
         chart_src = scoped_adv.copy() if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg.copy()
         ctx_src = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
         summary_source = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
@@ -1490,6 +2138,14 @@ def render_compare_tab(primary_player: dict, model=None):
             "ctx": _ensure_ctx_dict(compact_player_context(ctx_src) if ctx_src is not None and not ctx_src.empty else {}),
         })
     player_frames = scoped_frames
+    compare_signature = selected_compare_view + "|" + "|".join(item["name"] for item in player_frames)
+    if st.session_state.get("compare_ai_output_signature") != compare_signature:
+        st.session_state.pop("compare_scouting_report_output", None)
+        st.session_state.pop("compare_build_around_output", None)
+        st.session_state.pop("compare_debate_output", None)
+        st.session_state.pop("compare_debate_chat_key", None)
+        st.session_state.pop("compare_debate_system_prompt", None)
+        st.session_state["compare_ai_output_signature"] = compare_signature
 
     if "show_compare_ai_rail" not in st.session_state:
         st.session_state["show_compare_ai_rail"] = True
@@ -1520,6 +2176,8 @@ def render_compare_tab(primary_player: dict, model=None):
                 show_df, nums, pcts = _make_readable_stats_table(show_df)
                 render_html_table(show_df, number_cols=nums, percent_cols=pcts, max_height_px=420)
 
+        _render_archetype_compare_view(player_frames, selected_compare_view)
+
         align_mode = st.radio(
             "Align seasons by",
             ["Calendar (overlap only)", "Career year", "Age"],
@@ -1530,7 +2188,11 @@ def render_compare_tab(primary_player: dict, model=None):
 
         if align_mode == "Age":
             for item in player_frames:
-                birth_year = _get_birth_year(item["player"]["id"])
+                birth_year = _get_birth_year(
+                    item["player"]["id"],
+                    player_name=item["player"].get("full_name"),
+                    player_source=item["player"].get("source"),
+                )
                 item["chart_src"] = _add_age_column(item["chart_src"], birth_year)
 
         year_sets = [
@@ -1615,6 +2277,9 @@ def render_compare_tab(primary_player: dict, model=None):
             fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
             st.plotly_chart(fig, use_container_width=True)
 
+        _render_visual_overlap_charts(player_frames, selected_compare_view)
+        _render_strengths_weaknesses_matrix(player_frames, selected_compare_view)
+        _render_shot_profile_compare(player_frames, selected_compare_view)
         _render_comparison_verdict_cards(player_frames, selected_compare_view)
         _render_percentile_compare_view(player_frames, selected_compare_view)
 
@@ -1732,6 +2397,110 @@ def render_compare_tab(primary_player: dict, model=None):
             st.markdown("### 🧠 AI Tools")
             st.caption("Open or close each panel as needed.")
 
+            with st.expander("Side-by-Side AI Scouting Report", expanded=False):
+                if model:
+                    st.caption("Generate a structured scouting report for every selected player in this compare view.")
+                    if st.button("Generate Scouting Report", key="generate_compare_scouting_report", use_container_width=True):
+                        prompt = _compare_scouting_report_prompt(player_frames, selected_compare_view)
+                        with st.spinner("Building scouting report…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.55)
+                                st.session_state["compare_scouting_report_output"] = text or "No response."
+                                st.session_state["compare_report_players"] = [item["name"] for item in player_frames]
+                                st.session_state["compare_report_view"] = selected_compare_view
+                                st.session_state["compare_report_mode"] = "scouting"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("compare_scouting_report_output"):
+                        st.caption("A scouting report is already available.")
+                        if st.button("Open Report Page", key="open_compare_scouting_report_page", use_container_width=True):
+                            st.session_state["compare_report_mode"] = "scouting"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Who Would You Rather Build Around?", expanded=False):
+                if model:
+                    lens = st.selectbox(
+                        "Build-around lens",
+                        ["Balanced", "Long-Term Franchise Pick", "Win-Now Contender"],
+                        key="compare_build_around_lens",
+                    )
+                    if st.button("Run Build-Around Verdict", key="run_build_around_verdict", use_container_width=True):
+                        prompt = _build_around_prompt(player_frames, selected_compare_view, lens)
+                        with st.spinner("Weighing the build-around case…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.55)
+                                st.session_state["compare_build_around_output"] = text or "No response."
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("compare_build_around_output"):
+                        st.markdown(st.session_state["compare_build_around_output"])
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Debate Mode", expanded=False):
+                if model:
+                    debate_lens = st.selectbox(
+                        "Debate lens",
+                        [
+                            "Best Overall Player",
+                            "Playoff Series",
+                            "Best Offensive Engine",
+                            "Best Defensive Piece",
+                            "Best Second Star",
+                        ],
+                        key="compare_debate_lens_select",
+                    )
+                    debate_focus = st.text_input(
+                        "Optional custom framing",
+                        value="",
+                        placeholder="Example: Make the case for who is harder to scheme against in the playoffs",
+                        key="compare_debate_focus",
+                    )
+                    if st.button("Generate Debate", key="generate_compare_debate", use_container_width=True):
+                        prompt = _compare_debate_prompt(player_frames, selected_compare_view, debate_lens, debate_focus)
+                        debate_key = _compare_debate_chat_key(player_frames, selected_compare_view, debate_lens)
+                        with st.spinner("Building the debate…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.7)
+                                st.session_state["compare_debate_output"] = text or "No response."
+                                st.session_state["compare_debate_players"] = [item["name"] for item in player_frames]
+                                st.session_state["compare_debate_view"] = selected_compare_view
+                                st.session_state["compare_debate_lens"] = debate_lens
+                                st.session_state["compare_debate_chat_key"] = debate_key
+                                st.session_state["compare_debate_system_prompt"] = prompt
+                                st.session_state.setdefault("compare_debate_conversations", {})[debate_key] = [
+                                    {"role": "assistant", "content": text or "No response."}
+                                ]
+                                st.session_state["compare_report_mode"] = "debate"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("compare_debate_output"):
+                        st.caption("A debate page is already available.")
+                        if st.button("Open Debate Page", key="open_compare_debate_page", use_container_width=True):
+                            st.session_state["compare_report_mode"] = "debate"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
             with st.expander("Comparison Question Ideas", expanded=False):
                 topic_map = {
                     "Overview": "balanced; efficiency, usage, passing, rebounding, trends",
@@ -1765,32 +2534,34 @@ def render_compare_tab(primary_player: dict, model=None):
             anchor = make_anchor("compare_ai_anchor")
             with st.expander("Ask the AI Assistant", expanded=True):
                 if model:
-                    q2 = st.text_input("Ask something about these players:", key="ai_compare_question")
-                    if q2:
-                        summaries = []
-                        for item in player_frames:
-                            summary = generate_player_summary(
-                                item["name"],
-                                item["raw_pg"] if not item["raw_pg"].empty else item["adv"],
-                                item["adv"],
-                            )
-                            summaries.append(f"{item['name']}:\n{summary}")
-                        prompt2 = (
-                            "You are an expert NBA analyst. Compare the selected players strictly using the provided season tables. "
-                            "Give a fuller answer, use specific stats to support claims, and when helpful rank the players for the question being asked. "
-                            "Lean on TS%, eFG%, PPS, 3PAr, FTr, USG% (true), AST%, TRB%, per-game output, and per-36 trends. "
-                            "If data is missing for a metric, acknowledge it and use available proxies.\n\n"
-                            + "\n\n".join(summaries)
-                            + f"\n\nQuestion: {q2}"
-                        )
-                        with st.spinner("Analyzing…"):
-                            try:
-                                text = ai_generate_text(model, prompt2, max_output_tokens=4096, temperature=0.6)
-                                st.markdown("### 🧠 AI Analysis")
-                                st.write(text or "No response.")
-                            except Exception as e:
-                                st.warning(_friendly_ai_error_message(e))
-                                st.caption(f"Details: {type(e).__name__}")
+                    chat_store = st.session_state.setdefault("compare_ai_conversations", {})
+                    chat_key = _compare_ai_chat_key(player_frames)
+                    history = chat_store.get(chat_key, [])
+                    system_prompt = _compare_ai_system_prompt(player_frames)
+                    st.session_state["compare_ai_system_prompt"] = system_prompt
+                    st.session_state["compare_ai_chat_key"] = chat_key
+                    st.session_state["compare_ai_chat_players"] = [item["name"] for item in player_frames]
+
+                    if history:
+                        st.caption("Continue the compare conversation on its own page.")
+                        if st.button("Open AI Chat Page", key=f"open_compare_ai_chat_{chat_key}", use_container_width=True):
+                            st.session_state["compare_report_mode"] = "chat"
+                            st.rerun()
+                    else:
+                        with st.form(key=f"compare_ai_form_{chat_key}", clear_on_submit=True):
+                            q2 = st.text_input("Ask something about these players:", key=f"ai_compare_question_{chat_key}")
+                            submitted = st.form_submit_button("Open AI Chat", use_container_width=True)
+                        if submitted and q2:
+                            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": q2}]
+                            with st.spinner("Analyzing…"):
+                                try:
+                                    text = ai_generate_text(model, messages=messages, max_output_tokens=4096, temperature=0.6)
+                                    chat_store[chat_key] = [{"role": "user", "content": q2}, {"role": "assistant", "content": text or "No response."}]
+                                    st.session_state["compare_report_mode"] = "chat"
+                                    st.rerun()
+                                except Exception as e:
+                                    st.warning(_friendly_ai_error_message(e))
+                                    st.caption(f"Details: {type(e).__name__}")
                 else:
                     if AI_SETUP_ERROR:
                         st.info("AI is unavailable in this deployment right now.")

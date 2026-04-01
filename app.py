@@ -17,8 +17,13 @@ from fetch import (
     remove_player_from_watchlist,
 )
 from metrics import find_players_by_natural_language
-from ui_player import info_tab, stats_tab
-from ui_compare import render_compare_tab
+from ui_player import info_tab, stats_tab, render_player_scouting_report_page, render_player_ai_chat_page
+from ui_compare import (
+    render_compare_tab,
+    render_compare_scouting_report_page,
+    render_compare_ai_chat_page,
+    render_compare_debate_page,
+)
 
 ensure_page_config()
 
@@ -126,6 +131,7 @@ def _open_player(selected_player: dict) -> None:
     st.session_state["nl_meta"] = None
     st.session_state["active_view"] = "📊 Stats"
     st.session_state["search_feedback"] = None
+    st.session_state["player_report_mode"] = None
 
 
 def _player_search_suggestions(searchterm: str) -> list[tuple[str, dict]]:
@@ -175,6 +181,18 @@ def _load_share_state_from_url() -> None:
     if view_token in _TOKEN_TO_VIEW:
         st.session_state["active_view"] = _TOKEN_TO_VIEW[view_token]
 
+    report_mode = str(params.get("report", "")).strip().lower()
+    if report_mode == "compare-scouting":
+        st.session_state["compare_report_mode"] = "scouting"
+    elif report_mode == "compare-chat":
+        st.session_state["compare_report_mode"] = "chat"
+    elif report_mode == "compare-debate":
+        st.session_state["compare_report_mode"] = "debate"
+    elif report_mode == "player-scouting":
+        st.session_state["player_report_mode"] = "scouting"
+    elif report_mode == "player-chat":
+        st.session_state["player_report_mode"] = "chat"
+
     st.session_state["_share_state_loaded"] = True
 
 
@@ -199,6 +217,16 @@ def _sync_share_state_to_url() -> None:
     if compare_tokens:
         payload["compare"] = ",".join(compare_tokens)
 
+    if st.session_state.get("compare_report_mode"):
+        compare_mode = st.session_state.get("compare_report_mode")
+        payload["report"] = {
+            "chat": "compare-chat",
+            "scouting": "compare-scouting",
+            "debate": "compare-debate",
+        }.get(compare_mode, "compare-scouting")
+    elif st.session_state.get("player_report_mode"):
+        payload["report"] = "player-chat" if st.session_state.get("player_report_mode") == "chat" else "player-scouting"
+
     current = {k: str(v) for k, v in st.query_params.items()}
     if current != payload:
         st.query_params.clear()
@@ -213,6 +241,9 @@ for key, default in [
     ("compare_players", []),
     ("nl_results", None),
     ("nl_meta", None),
+    ("compare_report_mode", None),
+    ("player_report_mode", None),
+    ("requested_active_view", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -221,6 +252,9 @@ if "active_view" not in st.session_state:
     st.session_state["active_view"] = "📊 Stats"
 
 _load_share_state_from_url()
+
+if st.session_state.get("requested_active_view"):
+    st.session_state["active_view"] = st.session_state.pop("requested_active_view")
 
 with st.sidebar:
     st.header("🔍 Search Player")
@@ -467,6 +501,42 @@ if st.session_state["player"]:
         st.warning(
             "NBA stats looks slow right now. The app is using balldontlie as the primary live provider."
         )
+
+    if (
+        st.session_state.get("active_view") == "🤝 Compare Players"
+        and st.session_state.get("compare_report_mode") == "scouting"
+    ):
+        render_compare_scouting_report_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "🤝 Compare Players"
+        and st.session_state.get("compare_report_mode") == "chat"
+    ):
+        render_compare_ai_chat_page(model)
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "🤝 Compare Players"
+        and st.session_state.get("compare_report_mode") == "debate"
+    ):
+        render_compare_debate_page(model)
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "scouting"
+    ):
+        render_player_scouting_report_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "chat"
+    ):
+        render_player_ai_chat_page(model)
+        _sync_share_state_to_url()
+        st.stop()
 
     view = st.radio(
         "View",

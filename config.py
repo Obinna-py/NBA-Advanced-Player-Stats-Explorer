@@ -69,8 +69,9 @@ else:
 
 def ai_generate_text(
     client,
-    prompt: str,
+    prompt: str | None = None,
     *,
+    messages: list[dict] | None = None,
     max_output_tokens: int = 1024,
     temperature: float = 0.4,
     json_mode: bool = False,
@@ -78,9 +79,14 @@ def ai_generate_text(
     if client is None:
         raise ValueError("AI client is not available.")
 
+    if messages is None:
+        if prompt is None:
+            raise ValueError("Either prompt or messages must be provided.")
+        messages = [{"role": "user", "content": prompt}]
+
     payload = {
         "model": AI_MODEL_NAME,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_completion_tokens": max_output_tokens,
     }
 
