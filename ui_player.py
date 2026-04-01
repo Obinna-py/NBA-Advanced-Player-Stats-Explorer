@@ -58,6 +58,66 @@ def _player_ai_system_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df:
     )
 
 
+def _player_team_fit_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame, fit_context: str) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    focus = fit_context.strip() or "General NBA contender fit"
+    return (
+        "You are an expert NBA roster-building analyst. Evaluate this player's team fit using only the provided stats.\n"
+        "Write in markdown with these exact sections: Best Offensive Fit, Best Defensive Fit, Ideal Teammate Types, "
+        "Potential Fit Concerns, Best Roles, Bottom Line.\n"
+        "Use specific stats throughout. Focus on lineup fit, scalability, usage fit, spacing, playmaking fit, and defensive scheme fit.\n"
+        "Do not mention random players unless the fit context directly calls for it.\n\n"
+        f"Fit context:\n{focus}\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
+def _player_what_changed_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame, phases: dict) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    early = ", ".join(phases.get("early", [])) or "—"
+    prime = ", ".join(phases.get("prime", [])) or "—"
+    late = ", ".join(phases.get("late", [])) or "—"
+    peak = phases.get("peak_season", "—")
+    return (
+        "You are an expert NBA development analyst. Explain how this player's game changed over the course of his career "
+        "using only the provided stats and career-phase labels.\n"
+        "Write in markdown with these exact sections: Early Career Identity, Prime Evolution, Late-Career Changes, "
+        "What Improved, What Declined or Shifted, Bottom Line.\n"
+        "Use specific stats and trends throughout. Focus on role, efficiency, shooting profile, playmaking, defense, and usage changes.\n"
+        "Do not mention other players unless directly required by the provided stats.\n\n"
+        f"Career phases:\nEarly Career: {early}\nPrime: {prime}\nLate Career: {late}\nPeak Season: {peak}\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
+def _player_role_recommendation_prompt(
+    player_name: str,
+    pergame_df: pd.DataFrame,
+    adv_df: pd.DataFrame,
+    role_summary: dict,
+) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    primary = role_summary.get("primary", "—")
+    secondary = role_summary.get("secondary", "—")
+    style_tags = ", ".join(role_summary.get("style_tags", []) or []) or "—"
+    impact_tags = ", ".join(role_summary.get("impact_tags", []) or []) or "—"
+    return (
+        "You are an expert NBA role and roster analyst. Recommend this player's best NBA role using only the provided stats and archetype signals.\n"
+        "Write in markdown with these exact sections: Best Current Role, Best Long-Term Role, Offensive Responsibilities, "
+        "Defensive Responsibilities, Ideal Usage Level, Best Supporting Cast, Role Risks, Bottom Line.\n"
+        "Be specific about whether the player projects best as a primary engine, secondary creator, off-ball scorer, connector, "
+        "rim protector, floor spacer, defensive stopper, or other concrete NBA role. Use stats throughout.\n\n"
+        f"Archetype summary:\nPrimary: {primary}\nSecondary: {secondary}\nStyle Tags: {style_tags}\nImpact Tags: {impact_tags}\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
 def render_player_scouting_report_page() -> None:
     st.markdown("## 🧠 AI Player Scouting Report")
     player_name = st.session_state.get("player_report_player_name") or "Selected Player"
@@ -75,6 +135,69 @@ def render_player_scouting_report_page() -> None:
         st.markdown(report)
     else:
         st.info("No scouting report is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_what_changed_page() -> None:
+    st.markdown("## 🔄 What Changed?")
+    player_name = st.session_state.get("player_what_changed_player_name") or "Selected Player"
+    phase_summary = st.session_state.get("player_what_changed_phase_summary") or "Career phases unavailable"
+    st.caption(player_name)
+    st.caption(phase_summary)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_what_changed", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_what_changed_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No 'What Changed?' report is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_role_recommendation_page() -> None:
+    st.markdown("## 🎯 AI Role Recommendation")
+    player_name = st.session_state.get("player_role_player_name") or "Selected Player"
+    archetype_summary = st.session_state.get("player_role_archetype_summary") or "Archetype context unavailable"
+    st.caption(player_name)
+    st.caption(archetype_summary)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_role_recommendation", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_role_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No role recommendation is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_team_fit_page() -> None:
+    st.markdown("## 🧩 AI Team Fit Analyzer")
+    player_name = st.session_state.get("player_team_fit_player_name") or "Selected Player"
+    fit_context = st.session_state.get("player_team_fit_context") or "General NBA contender fit"
+    st.caption(player_name)
+    st.caption(f"Fit context: {fit_context}")
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_team_fit", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_team_fit_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No team fit analysis is available right now. Generate one from the player's Stats page first.")
 
 
 def render_player_ai_chat_page(model) -> None:
@@ -670,6 +793,19 @@ def stats_tab(player, model):
     full_adv = adv
 
     phase_player_key = _player_phase_state_key(player)
+    if st.session_state.get("player_ai_output_signature") != phase_player_key:
+        st.session_state.pop("player_scouting_report_output", None)
+        st.session_state.pop("player_what_changed_output", None)
+        st.session_state.pop("player_role_output", None)
+        st.session_state.pop("player_team_fit_output", None)
+        st.session_state.pop("player_report_player_name", None)
+        st.session_state.pop("player_what_changed_player_name", None)
+        st.session_state.pop("player_role_player_name", None)
+        st.session_state.pop("player_team_fit_player_name", None)
+        st.session_state.pop("player_what_changed_phase_summary", None)
+        st.session_state.pop("player_role_archetype_summary", None)
+        st.session_state.pop("player_team_fit_context", None)
+        st.session_state["player_ai_output_signature"] = phase_player_key
     phase_store = st.session_state.setdefault("career_phases_by_player", {})
     if model and phase_player_key not in phase_store and full_adv is not None and not full_adv.empty:
         phase_df = build_ai_phase_table(full_adv)
@@ -937,6 +1073,123 @@ def stats_tab(player, model):
                         st.caption("A scouting report is already available.")
                         if st.button("Open Report Page", key="open_player_scouting_report_page", use_container_width=True):
                             st.session_state["player_report_mode"] = "scouting"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("What Changed?", expanded=False):
+                if model:
+                    phase_store = st.session_state.get("career_phases_by_player", {})
+                    phases = phase_store.get(_player_phase_state_key(player))
+                    if phases and full_adv is not None and not full_adv.empty:
+                        phase_summary = (
+                            f"Early: {', '.join(phases.get('early', [])) or '—'} • "
+                            f"Prime: {', '.join(phases.get('prime', [])) or '—'} • "
+                            f"Late: {', '.join(phases.get('late', [])) or '—'}"
+                        )
+                        st.caption("Generate a dedicated page explaining how this player's game changed from early career to prime to late career.")
+                        if st.button("Generate What Changed Report", key="generate_player_what_changed", use_container_width=True):
+                            pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                            adv_for_summary = full_adv if full_adv is not None and not full_adv.empty else adv
+                            prompt = _player_what_changed_prompt(player["full_name"], pergame_for_summary, adv_for_summary, phases)
+                            with st.spinner("Analyzing career changes…"):
+                                try:
+                                    text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.65)
+                                    st.session_state["player_what_changed_output"] = text or "No response."
+                                    st.session_state["player_what_changed_player_name"] = player["full_name"]
+                                    st.session_state["player_what_changed_phase_summary"] = phase_summary
+                                    st.session_state["player_report_mode"] = "what-changed"
+                                    st.rerun()
+                                except Exception as e:
+                                    st.warning(_friendly_ai_error_message(e))
+                                    st.caption(f"Details: {type(e).__name__}")
+                        if st.session_state.get("player_what_changed_output"):
+                            st.caption("A What Changed report is already available.")
+                            if st.button("Open What Changed Page", key="open_player_what_changed_page", use_container_width=True):
+                                st.session_state["player_report_mode"] = "what-changed"
+                                st.rerun()
+                    else:
+                        st.info("What Changed becomes available once career phases and multi-season stats are available.")
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Role Recommendation", expanded=False):
+                if model:
+                    role_profile = archetype if isinstance(archetype, dict) else {}
+                    archetype_summary = (
+                        f"Primary: {role_profile.get('primary', '—')} • "
+                        f"Secondary: {role_profile.get('secondary', '—')} • "
+                        f"Style: {', '.join(role_profile.get('style_tags', [])[:3]) if role_profile.get('style_tags') else '—'}"
+                    )
+                    st.caption("Generate a dedicated page recommending this player's best NBA role and supporting context.")
+                    if st.button("Generate Role Recommendation", key="generate_player_role_recommendation", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = adv if adv is not None else pd.DataFrame()
+                        prompt = _player_role_recommendation_prompt(
+                            player["full_name"],
+                            pergame_for_summary,
+                            adv_for_summary,
+                            role_profile,
+                        )
+                        with st.spinner("Recommending role…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.65)
+                                st.session_state["player_role_output"] = text or "No response."
+                                st.session_state["player_role_player_name"] = player["full_name"]
+                                st.session_state["player_role_archetype_summary"] = archetype_summary
+                                st.session_state["player_report_mode"] = "role-recommendation"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_role_output"):
+                        st.caption("A role recommendation is already available.")
+                        if st.button("Open Role Recommendation Page", key="open_player_role_recommendation_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "role-recommendation"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Team Fit Analyzer", expanded=False):
+                if model:
+                    fit_context = st.text_input(
+                        "Team / teammate context",
+                        value="General NBA contender fit",
+                        placeholder="Example: Next to Luka Doncic on a contender",
+                        key="player_team_fit_context_input",
+                    )
+                    st.caption("Generate a dedicated page breaking down this player's best team fits and lineup context.")
+                    if st.button("Generate Team Fit Analysis", key="generate_player_team_fit", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = adv if adv is not None else pd.DataFrame()
+                        prompt = _player_team_fit_prompt(player["full_name"], pergame_for_summary, adv_for_summary, fit_context)
+                        with st.spinner("Analyzing team fit…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.65)
+                                st.session_state["player_team_fit_output"] = text or "No response."
+                                st.session_state["player_team_fit_player_name"] = player["full_name"]
+                                st.session_state["player_team_fit_context"] = fit_context.strip() or "General NBA contender fit"
+                                st.session_state["player_report_mode"] = "team-fit"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_team_fit_output"):
+                        st.caption("A team fit analysis is already available.")
+                        if st.button("Open Team Fit Page", key="open_player_team_fit_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "team-fit"
                             st.rerun()
                 else:
                     if AI_SETUP_ERROR:

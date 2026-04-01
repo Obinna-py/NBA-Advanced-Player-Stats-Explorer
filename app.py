@@ -17,7 +17,15 @@ from fetch import (
     remove_player_from_watchlist,
 )
 from metrics import find_players_by_natural_language
-from ui_player import info_tab, stats_tab, render_player_scouting_report_page, render_player_ai_chat_page
+from ui_player import (
+    info_tab,
+    stats_tab,
+    render_player_scouting_report_page,
+    render_player_ai_chat_page,
+    render_player_team_fit_page,
+    render_player_what_changed_page,
+    render_player_role_recommendation_page,
+)
 from ui_compare import (
     render_compare_tab,
     render_compare_scouting_report_page,
@@ -192,6 +200,12 @@ def _load_share_state_from_url() -> None:
         st.session_state["player_report_mode"] = "scouting"
     elif report_mode == "player-chat":
         st.session_state["player_report_mode"] = "chat"
+    elif report_mode == "player-team-fit":
+        st.session_state["player_report_mode"] = "team-fit"
+    elif report_mode == "player-what-changed":
+        st.session_state["player_report_mode"] = "what-changed"
+    elif report_mode == "player-role-recommendation":
+        st.session_state["player_report_mode"] = "role-recommendation"
 
     st.session_state["_share_state_loaded"] = True
 
@@ -225,7 +239,14 @@ def _sync_share_state_to_url() -> None:
             "debate": "compare-debate",
         }.get(compare_mode, "compare-scouting")
     elif st.session_state.get("player_report_mode"):
-        payload["report"] = "player-chat" if st.session_state.get("player_report_mode") == "chat" else "player-scouting"
+        player_mode = st.session_state.get("player_report_mode")
+        payload["report"] = {
+            "chat": "player-chat",
+            "scouting": "player-scouting",
+            "team-fit": "player-team-fit",
+            "what-changed": "player-what-changed",
+            "role-recommendation": "player-role-recommendation",
+        }.get(player_mode, "player-scouting")
 
     current = {k: str(v) for k, v in st.query_params.items()}
     if current != payload:
@@ -535,6 +556,27 @@ if st.session_state["player"]:
         and st.session_state.get("player_report_mode") == "chat"
     ):
         render_player_ai_chat_page(model)
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "team-fit"
+    ):
+        render_player_team_fit_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "what-changed"
+    ):
+        render_player_what_changed_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "role-recommendation"
+    ):
+        render_player_role_recommendation_page()
         _sync_share_state_to_url()
         st.stop()
 
