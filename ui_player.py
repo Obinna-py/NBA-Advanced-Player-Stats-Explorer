@@ -248,6 +248,81 @@ def _player_contract_value_prompt(
     )
 
 
+def _player_story_mode_prompt(
+    player_name: str,
+    pergame_df: pd.DataFrame,
+    adv_df: pd.DataFrame,
+    archetype_profile: dict | None = None,
+    phases: dict | None = None,
+) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_ctx = compact_player_context(adv_df if adv_df is not None and not adv_df.empty else pergame_df)
+    latest_team_record = latest_ctx.get("team_record") or "Unavailable"
+    age_value = latest_ctx.get("age")
+    age_text = str(int(age_value)) if isinstance(age_value, (int, float)) and not pd.isna(age_value) else "Unavailable"
+    archetype_profile = archetype_profile or {}
+    archetype_lines = [
+        f"Primary role: {archetype_profile.get('primary') or '—'}",
+        f"Secondary role: {archetype_profile.get('secondary') or '—'}",
+        f"Style tags: {', '.join(archetype_profile.get('style_tags', [])) if archetype_profile.get('style_tags') else '—'}",
+        f"Impact tags: {', '.join(archetype_profile.get('impact_tags', [])) if archetype_profile.get('impact_tags') else '—'}",
+    ]
+    phase_lines = [
+        f"Early career: {', '.join(phases.get('early', [])) if phases else '—'}",
+        f"Prime: {', '.join(phases.get('prime', [])) if phases else '—'}",
+        f"Late career: {', '.join(phases.get('late', [])) if phases else '—'}",
+        f"Peak season: {phases.get('peak_season') if phases else '—'}",
+    ]
+    return (
+        "You are an expert NBA storyteller and analyst. Write a compelling, readable player story that helps a fan quickly understand "
+        "who this player is, how he plays, how his career has evolved, and why he matters.\n"
+        "Write in markdown with these exact sections: Who He Is, How He Plays, Career Arc, Why He Matters, What Makes Him Unique, Bottom Line.\n"
+        "Ground the story in the provided stats and avoid generic filler. Use plain basketball language first, then bring in the stats to support it.\n\n"
+        f"Current age: {age_text}\n"
+        f"Current team record: {latest_team_record}\n\n"
+        f"Archetype profile:\n" + "\n".join(archetype_lines) + "\n\n"
+        f"Career phase context:\n" + "\n".join(phase_lines) + "\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
+def _player_franchise_ranker_prompt(
+    player_name: str,
+    franchise_name: str,
+    pergame_df: pd.DataFrame,
+    adv_df: pd.DataFrame,
+    archetype_profile: dict | None = None,
+) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_ctx = compact_player_context(adv_df if adv_df is not None and not adv_df.empty else pergame_df)
+    latest_team_record = latest_ctx.get("team_record") or "Unavailable"
+    age_value = latest_ctx.get("age")
+    age_text = str(int(age_value)) if isinstance(age_value, (int, float)) and not pd.isna(age_value) else "Unavailable"
+    archetype_profile = archetype_profile or {}
+    archetype_lines = [
+        f"Primary role: {archetype_profile.get('primary') or '—'}",
+        f"Secondary role: {archetype_profile.get('secondary') or '—'}",
+        f"Style tags: {', '.join(archetype_profile.get('style_tags', [])) if archetype_profile.get('style_tags') else '—'}",
+        f"Impact tags: {', '.join(archetype_profile.get('impact_tags', [])) if archetype_profile.get('impact_tags') else '—'}",
+    ]
+    return (
+        "You are an expert NBA franchise historian and analyst. Rank where this player belongs in the history of the specified franchise. "
+        "Use the provided player stats and career context plus your basketball knowledge of franchise history, but stay measured and avoid fake certainty.\n"
+        "Write in markdown with these exact sections: Franchise Context, Historical Tier, Case For A Higher Rank, Case For A Lower Rank, Estimated Franchise Ranking, Bottom Line.\n"
+        "In Estimated Franchise Ranking, give a realistic range like 'Top 3', 'Top 5', 'Top 10', or 'Outside Top 10' and explain why. "
+        "Mention the player's role, longevity, peak, and franchise-specific impact. Keep it readable and stat-backed.\n\n"
+        f"Franchise: {franchise_name}\n"
+        f"Current age: {age_text}\n"
+        f"Current team record: {latest_team_record}\n\n"
+        f"Archetype profile:\n" + "\n".join(archetype_lines) + "\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
 def render_player_scouting_report_page() -> None:
     st.markdown("## 🧠 AI Player Scouting Report")
     player_name = st.session_state.get("player_report_player_name") or "Selected Player"
@@ -265,6 +340,48 @@ def render_player_scouting_report_page() -> None:
         st.markdown(report)
     else:
         st.info("No scouting report is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_story_mode_page() -> None:
+    st.markdown("## 📖 Player Story Mode")
+    player_name = st.session_state.get("player_story_player_name") or "Selected Player"
+    story_summary = st.session_state.get("player_story_summary") or "Player story unavailable"
+    st.caption(player_name)
+    st.caption(story_summary)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_story_mode", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_story_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No player story is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_franchise_ranker_page() -> None:
+    st.markdown("## 🏛️ Franchise Ranker")
+    player_name = st.session_state.get("player_franchise_ranker_player_name") or "Selected Player"
+    franchise_summary = st.session_state.get("player_franchise_ranker_summary") or "Franchise context unavailable"
+    st.caption(player_name)
+    st.caption(franchise_summary)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_franchise_ranker", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_franchise_ranker_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No franchise ranking is available right now. Generate one from the player's Stats page first.")
 
 
 def render_player_what_changed_page() -> None:
@@ -874,9 +991,19 @@ def _build_summary_view_options(player: dict, adv: pd.DataFrame) -> tuple[dict[s
     if not phases:
         return options, captions
 
+    peak_season = str(phases.get("peak_season", "")).strip()
+    if peak_season and "SEASON_ID" in adv.columns:
+        peak_subset = adv[adv["SEASON_ID"].astype(str) == peak_season].copy()
+        if not peak_subset.empty:
+            options["Peak Season"] = {
+                "summary": peak_subset.iloc[-1],
+                "table_df": peak_subset,
+            }
+            captions["Peak Season"] = f"Showing the AI-labeled peak season ({peak_season})."
+
     phase_labels = [
-        ("Early Career", phases.get("early", [])),
         ("Prime", phases.get("prime", [])),
+        ("Early Career", phases.get("early", [])),
         ("Late Career", phases.get("late", [])),
     ]
     for label, season_list in phase_labels:
@@ -892,7 +1019,10 @@ def _build_summary_view_options(player: dict, adv: pd.DataFrame) -> tuple[dict[s
         }
         captions[label] = f"Showing these seasons: {', '.join(season_list)}. The headline cards use a games-weighted average for that window."
 
-    return options, captions
+    ordered_labels = ["Latest Season", "Peak Season", "Prime", "Full Career", "Early Career", "Late Career"]
+    ordered_options = {label: options[label] for label in ordered_labels if label in options}
+    ordered_captions = {label: captions[label] for label in ordered_labels if label in captions}
+    return ordered_options, ordered_captions
 
 
 def stats_tab(player, model):
@@ -944,11 +1074,17 @@ def stats_tab(player, model):
 
     phase_player_key = _player_phase_state_key(player)
     if st.session_state.get("player_ai_output_signature") != phase_player_key:
+        st.session_state.pop("player_story_output", None)
+        st.session_state.pop("player_franchise_ranker_output", None)
         st.session_state.pop("player_scouting_report_output", None)
         st.session_state.pop("player_what_changed_output", None)
         st.session_state.pop("player_role_output", None)
         st.session_state.pop("player_team_fit_output", None)
         st.session_state.pop("player_contract_value_output", None)
+        st.session_state.pop("player_story_player_name", None)
+        st.session_state.pop("player_story_summary", None)
+        st.session_state.pop("player_franchise_ranker_player_name", None)
+        st.session_state.pop("player_franchise_ranker_summary", None)
         st.session_state.pop("player_report_player_name", None)
         st.session_state.pop("player_what_changed_player_name", None)
         st.session_state.pop("player_role_player_name", None)
@@ -1239,6 +1375,50 @@ def stats_tab(player, model):
                         st.session_state["ai_question"] = idea
                         st.rerun()
 
+            with st.expander("Player Story Mode", expanded=False):
+                if model:
+                    role_profile = archetype if isinstance(archetype, dict) else {}
+                    phase_store = st.session_state.get("career_phases_by_player", {})
+                    phases = phase_store.get(_player_phase_state_key(player))
+                    story_summary = (
+                        f"Primary: {role_profile.get('primary', '—')} • "
+                        f"Style: {', '.join(role_profile.get('style_tags', [])[:2]) if role_profile.get('style_tags') else '—'} • "
+                        f"Peak: {phases.get('peak_season', '—') if phases else '—'}"
+                    )
+                    st.caption("Generate a dedicated page that tells this player's story in plain basketball language backed by the stats.")
+                    if st.button("Generate Player Story", key="generate_player_story_mode", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = full_adv if full_adv is not None and not full_adv.empty else adv
+                        prompt = _player_story_mode_prompt(
+                            player["full_name"],
+                            pergame_for_summary,
+                            adv_for_summary,
+                            role_profile,
+                            phases,
+                        )
+                        with st.spinner("Writing player story…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.65)
+                                st.session_state["player_story_output"] = text or "No response."
+                                st.session_state["player_story_player_name"] = player["full_name"]
+                                st.session_state["player_story_summary"] = story_summary
+                                st.session_state["player_report_mode"] = "story-mode"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_story_output"):
+                        st.caption("A player story is already available.")
+                        if st.button("Open Player Story Page", key="open_player_story_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "story-mode"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
             with st.expander("AI Scouting Report", expanded=False):
                 if model:
                     st.caption("Generate a dedicated scouting report page for this player.")
@@ -1260,6 +1440,51 @@ def stats_tab(player, model):
                         st.caption("A scouting report is already available.")
                         if st.button("Open Report Page", key="open_player_scouting_report_page", use_container_width=True):
                             st.session_state["player_report_mode"] = "scouting"
+                            st.rerun()
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Franchise Ranker", expanded=False):
+                if model:
+                    default_franchise = player.get("team_name") or player.get("team_abbreviation") or ""
+                    franchise_name = st.text_input(
+                        "Franchise context",
+                        value=default_franchise,
+                        placeholder="Example: Los Angeles Lakers",
+                        key="player_franchise_ranker_input",
+                    )
+                    role_profile = archetype if isinstance(archetype, dict) else {}
+                    st.caption("Estimate where this player belongs in the history of a franchise, with stats and historical context.")
+                    if st.button("Generate Franchise Ranking", key="generate_player_franchise_ranker", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = full_adv if full_adv is not None and not full_adv.empty else adv
+                        resolved_franchise = (franchise_name or default_franchise or "This Franchise").strip()
+                        prompt = _player_franchise_ranker_prompt(
+                            player["full_name"],
+                            resolved_franchise,
+                            pergame_for_summary,
+                            adv_for_summary,
+                            role_profile,
+                        )
+                        with st.spinner("Ranking franchise legacy…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.65)
+                                st.session_state["player_franchise_ranker_output"] = text or "No response."
+                                st.session_state["player_franchise_ranker_player_name"] = player["full_name"]
+                                st.session_state["player_franchise_ranker_summary"] = f"Franchise: {resolved_franchise}"
+                                st.session_state["player_report_mode"] = "franchise-ranker"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_franchise_ranker_output"):
+                        st.caption("A franchise ranking is already available.")
+                        if st.button("Open Franchise Ranking Page", key="open_player_franchise_ranker_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "franchise-ranker"
                             st.rerun()
                 else:
                     if AI_SETUP_ERROR:

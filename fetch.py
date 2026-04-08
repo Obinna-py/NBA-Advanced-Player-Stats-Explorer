@@ -1100,7 +1100,6 @@ def get_player_career(player_id: int, per_mode: str = 'Totals', player_name: str
             f"{_CACHE_SCHEMA_VERSION}:{player_id}:{per_mode}:{player_name or ''}:{player_source or ''}:{int(all_seasons)}",
             [
                 ("balldontlie", _fetch_balldontlie),
-                ("nba_api", _fetch_nba),
             ],
         )
     except Exception as e:
@@ -1125,7 +1124,7 @@ def get_player_info(player_id: int, player_name: str | None = None, player_sourc
         return _get_balldontlie_player_info(full_name)
 
     def _enrich_missing_birthdate(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty or not nba_player_id:
+        if df is None or df.empty:
             if df is None or df.empty:
                 return df
         if (
@@ -1146,21 +1145,7 @@ def get_player_info(player_id: int, player_name: str | None = None, player_sourc
                     local_meta.get("birthdate"),
                 )
             return merged
-        if not nba_player_id:
-            return df
-        try:
-            nba_df = _fetch_nba()
-        except Exception:
-            nba_df = pd.DataFrame()
-        if nba_df is None or nba_df.empty:
-            return df
-        merged = df.copy()
-        for col in nba_df.columns:
-            if col not in merged.columns:
-                merged[col] = nba_df.iloc[0].get(col)
-        if "BIRTHDATE" in nba_df.columns:
-            merged["BIRTHDATE"] = nba_df.iloc[0].get("BIRTHDATE")
-        return merged
+        return df
 
     try:
         df = _fetch_provider_then_cache(
@@ -1168,7 +1153,6 @@ def get_player_info(player_id: int, player_name: str | None = None, player_sourc
             f"{player_id}:{player_name or ''}:{player_source or ''}",
             [
                 ("balldontlie", _fetch_balldontlie),
-                ("nba_api", _fetch_nba),
             ],
         )
         return _enrich_missing_birthdate(df)

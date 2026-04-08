@@ -355,6 +355,12 @@ def _slice_compare_scope(df: pd.DataFrame, scope_label: str, phases: dict | None
     if not phases:
         return df.copy()
 
+    if scope_label == "Peak Season":
+        peak_season = str(phases.get("peak_season", "")).strip()
+        if not peak_season or "SEASON_ID" not in df.columns:
+            return pd.DataFrame()
+        return df[df["SEASON_ID"].astype(str) == peak_season].copy()
+
     phase_key_map = {
         "Early Career": "early",
         "Prime": "prime",
@@ -932,6 +938,62 @@ def _build_multi_aligned_df(player_frames: list[dict], stat: str, align_mode: st
         rows.append(part)
 
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def _build_era_compare_df(player_frames: list[dict], stat_choice: str, align_mode: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_seasons = sorted({
+        int(season)
+        for item in player_frames
+        for season in (
+            item["chart_src"]["SEASON_START"].unique().tolist()
+            if item["chart_src"] is not None and not item["chart_src"].empty and "SEASON_START" in item["chart_src"].columns
+            else []
+        )
+    })
+    if not all_seasons:
+        return pd.DataFrame(), pd.DataFrame()
+
+    league_tbl = compute_league_shooting_table([f"{y}-{str(y+1)[-2:]}" for y in all_seasons])
+    if league_tbl is None or league_tbl.empty or stat_choice not in league_tbl.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    adjusted_frames = []
+    snapshot_rows = []
+    plus_col = f"{stat_choice}+"
+    for item in player_frames:
+        chart_src = item["chart_src"]
+        if chart_src is None or chart_src.empty or stat_choice not in chart_src.columns or "SEASON_START" not in chart_src.columns:
+            continue
+        working = chart_src.copy()
+        working = working.merge(
+            league_tbl[["SEASON_START", stat_choice]].rename(columns={stat_choice: "LEAGUE_BASE"}),
+            on="SEASON_START",
+            how="left",
+        )
+        working[plus_col] = np.where(
+            pd.to_numeric(working["LEAGUE_BASE"], errors="coerce") > 0,
+            100.0 * pd.to_numeric(working[stat_choice], errors="coerce") / pd.to_numeric(working["LEAGUE_BASE"], errors="coerce"),
+            np.nan,
+        )
+        working.drop(columns=["LEAGUE_BASE"], errors="ignore", inplace=True)
+        adjusted_frames.append({**item, "chart_src": working})
+
+        avg_plus = _safe_mean(working, plus_col)
+        latest_plus = pd.to_numeric(working[plus_col], errors="coerce").dropna().iloc[-1] if not working.empty and pd.to_numeric(working[plus_col], errors="coerce").dropna().size else None
+        raw_avg = _safe_mean(working, stat_choice)
+        snapshot_rows.append({
+            "Player": item["name"],
+            f"{stat_choice}+": avg_plus,
+            f"Latest {stat_choice}+": latest_plus,
+            f"Raw {stat_choice}": raw_avg,
+        })
+
+    aligned = _build_multi_aligned_df(adjusted_frames, plus_col, align_mode) if adjusted_frames else pd.DataFrame()
+    snapshot_df = pd.DataFrame(snapshot_rows)
+    if not snapshot_df.empty and f"{stat_choice}+" in snapshot_df.columns:
+        snapshot_df[f"{stat_choice}+"] = pd.to_numeric(snapshot_df[f"{stat_choice}+"], errors="coerce")
+        snapshot_df = snapshot_df.sort_values(by=f"{stat_choice}+", ascending=False, na_position="last").reset_index(drop=True)
+    return aligned, snapshot_df
 
 
 def _safe_mean(df: pd.DataFrame, col: str) -> float | None:
@@ -1765,7 +1827,15 @@ def _build_around_prompt(player_frames: list[dict], scope_label: str, lens: str)
 
 
 def _compare_debate_prompt(player_frames: list[dict], scope_label: str, lens: str, custom_focus: str = "") -> str:
-    summaries = _build_compare_ai_summaries(player_frames)
+    greatest_lenses = {
+        "Greatest Overall Career",
+        "Highest Peak",
+        "Best Prime",
+        "Best Legacy / Resume",
+        "Most Complete All-Time Player",
+    }
+    use_full_career = lens in greatest_lenses
+    summaries = _build_full_career_ai_summaries(player_frames) if use_full_career else _build_compare_ai_summaries(player_frames)
     names = [item["name"] for item in player_frames]
     joined_names = ", ".join(names)
     exact_count = len(names)
@@ -1775,26 +1845,59 @@ def _compare_debate_prompt(player_frames: list[dict], scope_label: str, lens: st
         "Best Offensive Engine": "argue who is the strongest offensive engine in this selected compare view",
         "Best Defensive Piece": "argue who brings the strongest defensive value in this selected compare view",
         "Best Second Star": "argue who scales best as a second star next to another elite player in this selected compare view",
+        "Greatest Overall Career": "argue who has the greatest overall NBA career among the selected players",
+        "Highest Peak": "argue who reached the highest peak at his best",
+        "Best Prime": "argue who sustained the strongest prime across multiple seasons",
+        "Best Legacy / Resume": "argue who has the strongest all-time legacy and career resume",
+        "Most Complete All-Time Player": "argue who combines peak, longevity, versatility, and overall greatness the best",
     }.get(lens, "argue which player has the strongest case in this selected compare view")
     custom_line = f"Additional debate framing from the user: {custom_focus.strip()}.\n" if custom_focus.strip() else ""
-    return (
-        "You are moderating a sharp NBA debate. Use only the selected players and only the provided stat summaries. "
-        f"You must only discuss these {exact_count} players: {joined_names}. Do not mention or compare any other NBA players. "
-        f"{lens_instruction}. "
-        "Write in markdown with these exact sections: Opening Case, Best Case For Each Player, Strongest Counter-Arguments, Debate Verdict, Bottom Line. "
+    scope_line = (
+        "Use the selected players only and lean on their full career body of work, including peak, prime, longevity, role, and historical stature. "
+        if use_full_career
+        else "Use only the selected players and only the provided stat summaries from the selected compare view. "
+    )
+    section_names = (
+        "Opening Case, Greatest Case For Each Player, Legacy Counter-Arguments, Greatest Debate Verdict, Bottom Line"
+        if use_full_career
+        else "Opening Case, Best Case For Each Player, Strongest Counter-Arguments, Debate Verdict, Bottom Line"
+    )
+    detail_instructions = (
+        "In 'Greatest Case For Each Player', give every selected player their own subheading and 2-4 concrete points using the provided career summaries. "
+        "In 'Legacy Counter-Arguments', challenge each selected player with 1-3 realistic limitations or gaps. "
+        "In 'Greatest Debate Verdict', choose a winner and explain why that player wins this all-time lens. "
+        "Keep it sharp, historically aware, and specific."
+        if use_full_career
+        else
         "In 'Best Case For Each Player', give every selected player their own subheading and 2-4 concrete stat-backed points. "
         "In 'Strongest Counter-Arguments', challenge each selected player with 1-3 stat-backed weaknesses or limitations. "
         "In 'Debate Verdict', choose a winner and explain why they win this exact debate lens. "
-        "Keep it readable, direct, and specific.\n\n"
+        "Keep it readable, direct, and specific."
+    )
+    return (
+        "You are moderating a sharp NBA debate. "
+        f"You must only discuss these {exact_count} players: {joined_names}. Do not mention or compare any other NBA players. "
+        + scope_line +
+        f"{lens_instruction}. "
+        f"Write in markdown with these exact sections: {section_names}. "
+        + detail_instructions + "\n\n"
         + custom_line
         + "\n\n".join(summaries)
-        + f"\n\nPlayers: {joined_names}\nDebate lens: {lens}\nCompare view: {scope_label}"
+        + f"\n\nPlayers: {joined_names}\nDebate lens: {lens}\nCompare view: {scope_label if not use_full_career else 'Full Career / All-Time Lens'}"
     )
 
 
 def _compare_debate_chat_key(player_frames: list[dict], scope_label: str, lens: str) -> str:
     names = sorted(item["name"] for item in player_frames)
-    return f"{scope_label}|{lens}|{'|'.join(names)}"
+    greatest_lenses = {
+        "Greatest Overall Career",
+        "Highest Peak",
+        "Best Prime",
+        "Best Legacy / Resume",
+        "Most Complete All-Time Player",
+    }
+    scope_key = "full-career-all-time" if lens in greatest_lenses else scope_label
+    return f"{scope_key}|{lens}|{'|'.join(names)}"
 
 
 def render_compare_scouting_report_page() -> None:
@@ -2129,15 +2232,20 @@ def render_compare_tab(primary_player: dict, model=None):
                 "ctx": ctx,
             })
 
-    compare_view_options = ["Latest Season", "Full Career"]
+    compare_view_options = ["Latest Season"]
+    if all(item.get("phases") and item["phases"].get("peak_season") for item in player_frames):
+        compare_view_options.append("Peak Season")
     phase_option_specs = [
-        ("Early Career", "early"),
         ("Prime", "prime"),
+        ("Early Career", "early"),
         ("Late Career", "late"),
     ]
     for label, phase_key in phase_option_specs:
         if all(item.get("phases") and item["phases"].get(phase_key) for item in player_frames):
             compare_view_options.append(label)
+    compare_view_options.append("Full Career")
+    preferred_order = ["Latest Season", "Peak Season", "Prime", "Full Career", "Early Career", "Late Career"]
+    compare_view_options = [label for label in preferred_order if label in compare_view_options]
 
     selected_compare_view = st.selectbox(
         "Comparison view",
@@ -2147,6 +2255,7 @@ def render_compare_tab(primary_player: dict, model=None):
     )
     compare_view_captions = {
         "Latest Season": "Comparing each player's latest available season.",
+        "Peak Season": "Comparing each player's AI-labeled peak season.",
         "Full Career": "Comparing full-career windows, with verdicts using games-weighted averages across each player's full body of work.",
         "Early Career": "Comparing each player's AI-labeled early-career seasons.",
         "Prime": "Comparing each player's AI-labeled prime seasons.",
@@ -2323,6 +2432,45 @@ def render_compare_tab(primary_player: dict, model=None):
             fig = px.line(aligned, x="X", y="Value", color="Player", markers=True, title=title)
             fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
             st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### 🕰️ Era Compare")
+        render_stat_text(
+            "Compare players against the league they actually played in. A score of 100 means league average for that season, "
+            "while numbers above 100 mean the player beat his era on that metric.",
+            small=True,
+        )
+        era_metric = st.selectbox(
+            "Era-adjusted metric",
+            ["TS%", "EFG%", "FG%", "3P%", "FT%"],
+            index=0,
+            key="era_compare_metric",
+        )
+        era_aligned, era_snapshot = _build_era_compare_df(player_frames, era_metric, align_mode)
+        if era_aligned.empty:
+            st.info("Era compare is unavailable for this view right now.")
+        else:
+            era_x_label = {"Calendar (overlap only)": "Season", "Career year": "Career Year", "Age": "Age (approx)"}[align_mode]
+            era_fig = px.line(
+                era_aligned,
+                x="X",
+                y="Value",
+                color="Player",
+                markers=True,
+                title=f"{era_metric}+ Era Compare",
+            )
+            era_fig.add_hline(y=100, line_dash="dash", line_color="rgba(255,255,255,0.5)", annotation_text="League average")
+            era_fig.update_layout(
+                xaxis_title=era_x_label,
+                yaxis_title=f"{era_metric}+",
+                legend_title="Player",
+            )
+            st.plotly_chart(era_fig, use_container_width=True)
+            if not era_snapshot.empty:
+                render_html_table(
+                    era_snapshot,
+                    number_cols=[f"{era_metric}+", f"Latest {era_metric}+", f"Raw {era_metric}"],
+                    max_height_px=260,
+                )
 
         _render_visual_overlap_charts(player_frames, selected_compare_view)
         _render_strengths_weaknesses_matrix(player_frames, selected_compare_view)
@@ -2507,6 +2655,11 @@ def render_compare_tab(primary_player: dict, model=None):
                             "Best Offensive Engine",
                             "Best Defensive Piece",
                             "Best Second Star",
+                            "Greatest Overall Career",
+                            "Highest Peak",
+                            "Best Prime",
+                            "Best Legacy / Resume",
+                            "Most Complete All-Time Player",
                         ],
                         key="compare_debate_lens_select",
                     )

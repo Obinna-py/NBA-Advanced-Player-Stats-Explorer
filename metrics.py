@@ -606,30 +606,44 @@ def compute_league_shooting_table(seasons: list[str]) -> pd.DataFrame:
     if not seasons:
         return pd.DataFrame()
 
-    league = get_team_totals_many(seasons)
-    if league is None or league.empty:
-        return pd.DataFrame()
+    rows = []
+    for season_id in sorted(set([s for s in seasons if isinstance(s, str) and s])):
+        try:
+            season_start = int(str(season_id)[:4])
+        except Exception:
+            continue
+        league = get_balldontlie_league_season_averages(season_start)
+        if league is None or league.empty:
+            continue
 
-    grp = league.groupby("SEASON_ID", as_index=False).agg({
-        "FGM": "sum", "FGA": "sum",
-        "FG3M": "sum", "FG3A": "sum",
-        "FTM": "sum", "FTA": "sum",
-        "PTS": "sum",
-    })
-    grp["SEASON_START"] = grp["SEASON_ID"].astype(str).str[:4].astype(int)
+        gp = pd.to_numeric(league.get("gp"), errors="coerce").fillna(0)
+        fgm = pd.to_numeric(league.get("fgm"), errors="coerce").fillna(0) * gp
+        fga = pd.to_numeric(league.get("fga"), errors="coerce").fillna(0) * gp
+        fg3m = pd.to_numeric(league.get("fg3m"), errors="coerce").fillna(0) * gp
+        fg3a = pd.to_numeric(league.get("fg3a"), errors="coerce").fillna(0) * gp
+        ftm = pd.to_numeric(league.get("ftm"), errors="coerce").fillna(0) * gp
+        fta = pd.to_numeric(league.get("fta"), errors="coerce").fillna(0) * gp
+        pts = pd.to_numeric(league.get("pts"), errors="coerce").fillna(0) * gp
 
-    # Percentages (0–100)
-    grp["FG%"]  = np.where(grp["FGA"]>0, 100.0*grp["FGM"]/grp["FGA"], np.nan)
-    grp["3P%"]  = np.where(grp["FG3A"]>0, 100.0*grp["FG3M"]/grp["FG3A"], np.nan)
-    grp["FT%"]  = np.where(grp["FTA"]>0, 100.0*grp["FTM"]/grp["FTA"], np.nan)
-    grp["TS%"]  = np.where((grp["FGA"]+0.44*grp["FTA"])>0,
-                           100.0*grp["PTS"]/(2.0*(grp["FGA"]+0.44*grp["FTA"])),
-                           np.nan)
-    grp["EFG%"] = np.where(grp["FGA"]>0,
-                           100.0*(grp["FGM"] + 0.5*grp["FG3M"])/grp["FGA"],
-                           np.nan)
+        fgm_sum = fgm.sum()
+        fga_sum = fga.sum()
+        fg3m_sum = fg3m.sum()
+        fg3a_sum = fg3a.sum()
+        ftm_sum = ftm.sum()
+        fta_sum = fta.sum()
+        pts_sum = pts.sum()
 
-    return grp[["SEASON_ID","SEASON_START","FG%","3P%","FT%","TS%","EFG%"]].copy()
+        rows.append({
+            "SEASON_ID": season_id,
+            "SEASON_START": season_start,
+            "FG%": 100.0 * fgm_sum / fga_sum if fga_sum > 0 else np.nan,
+            "3P%": 100.0 * fg3m_sum / fg3a_sum if fg3a_sum > 0 else np.nan,
+            "FT%": 100.0 * ftm_sum / fta_sum if fta_sum > 0 else np.nan,
+            "TS%": 100.0 * pts_sum / (2.0 * (fga_sum + 0.44 * fta_sum)) if (fga_sum + 0.44 * fta_sum) > 0 else np.nan,
+            "EFG%": 100.0 * (fgm_sum + 0.5 * fg3m_sum) / fga_sum if fga_sum > 0 else np.nan,
+        })
+
+    return pd.DataFrame(rows)
 
 def build_ai_phase_table(adv_df: pd.DataFrame) -> pd.DataFrame:
     """

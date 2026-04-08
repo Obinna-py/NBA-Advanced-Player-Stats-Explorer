@@ -7,7 +7,6 @@ except Exception:
     st_searchbox = None
 
 from fetch import (
-    check_nba_api_health,
     check_balldontlie_api_health,
     search_players,
     player_from_share_token,
@@ -20,6 +19,8 @@ from metrics import find_players_by_natural_language
 from ui_player import (
     info_tab,
     stats_tab,
+    render_player_story_mode_page,
+    render_player_franchise_ranker_page,
     render_player_scouting_report_page,
     render_player_ai_chat_page,
     render_player_team_fit_page,
@@ -201,6 +202,10 @@ def _load_share_state_from_url() -> None:
         st.session_state["player_report_mode"] = "scouting"
     elif report_mode == "player-chat":
         st.session_state["player_report_mode"] = "chat"
+    elif report_mode == "player-story-mode":
+        st.session_state["player_report_mode"] = "story-mode"
+    elif report_mode == "player-franchise-ranker":
+        st.session_state["player_report_mode"] = "franchise-ranker"
     elif report_mode == "player-team-fit":
         st.session_state["player_report_mode"] = "team-fit"
     elif report_mode == "player-what-changed":
@@ -245,6 +250,8 @@ def _sync_share_state_to_url() -> None:
         player_mode = st.session_state.get("player_report_mode")
         payload["report"] = {
             "chat": "player-chat",
+            "story-mode": "player-story-mode",
+            "franchise-ranker": "player-franchise-ranker",
             "scouting": "player-scouting",
             "team-fit": "player-team-fit",
             "what-changed": "player-what-changed",
@@ -384,22 +391,10 @@ with st.sidebar:
         st.caption("Save players here for quick access later.")
     st.divider()
     st.subheader("API Status")
-    run_nba_check = st.button("Check NBA API", use_container_width=True)
     run_balldontlie_check = st.button("Check balldontlie API", use_container_width=True)
 
-    if run_nba_check:
-        st.session_state["nba_api_health"] = check_nba_api_health()
     if run_balldontlie_check:
         st.session_state["balldontlie_api_health"] = check_balldontlie_api_health()
-
-    nba_health = st.session_state.get("nba_api_health")
-    if nba_health:
-        st.caption("NBA stats")
-        if nba_health.get("ok"):
-            st.success(nba_health.get("message", "NBA API is reachable."))
-        else:
-            st.warning("NBA API looks slow right now.")
-            st.caption("The app now prefers balldontlie first, then NBA stats, then local cache.")
 
     balldontlie_health = st.session_state.get("balldontlie_api_health")
     if balldontlie_health:
@@ -521,12 +516,6 @@ if st.session_state["matches"]:
         st.session_state["active_view"] = "📊 Stats"
 
 if st.session_state["player"]:
-    health = st.session_state.get("nba_api_health")
-    if health and not health.get("ok"):
-        st.warning(
-            "NBA stats looks slow right now. The app is using balldontlie as the primary live provider."
-        )
-
     if (
         st.session_state.get("active_view") == "🤝 Compare Players"
         and st.session_state.get("compare_report_mode") == "scouting"
@@ -546,6 +535,20 @@ if st.session_state["player"]:
         and st.session_state.get("compare_report_mode") == "debate"
     ):
         render_compare_debate_page(model)
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "story-mode"
+    ):
+        render_player_story_mode_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "📊 Stats"
+        and st.session_state.get("player_report_mode") == "franchise-ranker"
+    ):
+        render_player_franchise_ranker_page()
         _sync_share_state_to_url()
         st.stop()
     if (
