@@ -2,6 +2,7 @@
 import time, random, hashlib, json
 from pathlib import Path
 import unicodedata
+from urllib.parse import quote
 import pandas as pd
 from requests.exceptions import ReadTimeout, ConnectionError
 import requests
@@ -386,6 +387,63 @@ def get_balldontlie_team_games(team_id: int, per_page: int = 10) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_balldontlie_player_contracts(player_id: int, player_name: str | None = None, player_source: str | None = None) -> pd.DataFrame:
+    bd_player_id = _resolve_balldontlie_player_id(player_id, player_name=player_name, player_source=player_source)
+    if not bd_player_id:
+        return pd.DataFrame()
+    payload = _balldontlie_get(
+        "/v1/contracts/players",
+        params={"player_id": bd_player_id, "per_page": 100},
+        timeout=_BALLDONTLIE_TIMEOUT_S,
+    )
+    rows = []
+    for item in payload.get("data", []) or []:
+        player_row = item.get("player") or {}
+        team_row = item.get("team") or {}
+        rows.append({
+            "season": item.get("season"),
+            "cap_hit": item.get("cap_hit"),
+            "total_cash": item.get("total_cash"),
+            "base_salary": item.get("base_salary"),
+            "rank": item.get("rank"),
+            "team_name": team_row.get("full_name") or team_row.get("name"),
+            "team_abbreviation": team_row.get("abbreviation"),
+            "player_id": item.get("player_id") or player_row.get("id"),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_balldontlie_player_contract_aggregates(player_id: int, player_name: str | None = None, player_source: str | None = None) -> pd.DataFrame:
+    bd_player_id = _resolve_balldontlie_player_id(player_id, player_name=player_name, player_source=player_source)
+    if not bd_player_id:
+        return pd.DataFrame()
+    payload = _balldontlie_get(
+        "/v1/contracts/players/aggregate",
+        params={"player_id": bd_player_id, "per_page": 100},
+        timeout=_BALLDONTLIE_TIMEOUT_S,
+    )
+    rows = []
+    for item in payload.get("data", []) or []:
+        rows.append({
+            "start_year": item.get("start_year"),
+            "end_year": item.get("end_year"),
+            "contract_type": item.get("contract_type"),
+            "contract_status": item.get("contract_status"),
+            "contract_years": item.get("contract_years"),
+            "total_value": item.get("total_value"),
+            "average_salary": item.get("average_salary"),
+            "guaranteed_at_signing": item.get("guaranteed_at_signing"),
+            "total_guaranteed": item.get("total_guaranteed"),
+            "signed_using": item.get("signed_using"),
+            "free_agent_year": item.get("free_agent_year"),
+            "free_agent_status": item.get("free_agent_status"),
+            "contract_notes": item.get("contract_notes"),
+        })
+    return pd.DataFrame(rows)
+
+
 def _get_balldontlie_player_info(full_name: str) -> pd.DataFrame:
     player = _find_balldontlie_player_by_name(full_name)
     if not player:
@@ -446,6 +504,18 @@ def get_nba_headshot_url(player_id: int, player_name: str | None = None, player_
     if not nba_player_id:
         return None
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{nba_player_id}.png"
+
+
+def get_placeholder_headshot_data_uri() -> str:
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">
+      <rect width="320" height="320" rx="28" fill="#111827"/>
+      <circle cx="160" cy="112" r="52" fill="#374151"/>
+      <path d="M64 278c10-54 48-88 96-88s86 34 96 88" fill="#374151"/>
+      <circle cx="160" cy="160" r="136" fill="none" stroke="#1f2937" stroke-width="8"/>
+    </svg>
+    """.strip()
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
 
 
 def _resolve_balldontlie_player_id(player_id: int, player_name: str | None = None, player_source: str | None = None) -> int | None:
@@ -1120,16 +1190,86 @@ def get_team_totals_for_season(season: str) -> pd.DataFrame:
         [("nba_api", _fetch)],
     )
     needed = ["TEAM_ID","TEAM_ABBREVIATION","MIN","FGA","FTA","TOV","FGM","REB","OREB","DREB","FG3M","FG3A","FTM","PTS","OPP_REB","OPP_OREB","OPP_DREB"]
+    record_cols = ["W", "L", "W_PCT"]
     for c in needed:
         if c not in df.columns: df[c] = 0
+    for c in record_cols:
+        if c not in df.columns:
+            df[c] = pd.NA
     df["TRB"] = df["REB"]; df["SEASON_ID"] = season
-    return df[["SEASON_ID"] + needed + ["TRB"]].copy()
+    return df[["SEASON_ID"] + needed + record_cols + ["TRB"]].copy()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_team_totals_many(seasons: list[str]) -> pd.DataFrame:
     seasons = sorted(set([s for s in seasons if isinstance(s, str) and s]))
     frames = [get_team_totals_for_season(s) for s in seasons]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_team_record_for_season(season: str, team_id: int | None = None, team_abbreviation: str | None = None) -> dict | None:
+    if not season or team_id is None:
+        return None
+
+    try:
+        season_year = int(str(season)[:4])
+    except Exception:
+        return None
+
+    all_games = []
+    cursor = None
+    while True:
+        params = {
+            "team_ids[]": [int(team_id)],
+            "seasons[]": [season_year],
+            "per_page": 100,
+            "postseason": "false",
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        payload = _balldontlie_get("/v1/games", params=params, timeout=max(_BALLDONTLIE_TIMEOUT_S, 8))
+        batch = payload.get("data", []) or []
+        if not batch:
+            break
+        all_games.extend(batch)
+        cursor = (payload.get("meta") or {}).get("next_cursor")
+        if not cursor:
+            break
+
+    if not all_games:
+        return None
+
+    wins = 0
+    losses = 0
+    for game in all_games:
+        home_team = game.get("home_team", {}) or {}
+        away_team = game.get("visitor_team", {}) or {}
+        home_id = home_team.get("id")
+        away_id = away_team.get("id")
+        home_score = pd.to_numeric(game.get("home_team_score"), errors="coerce")
+        away_score = pd.to_numeric(game.get("visitor_team_score"), errors="coerce")
+        if pd.isna(home_score) or pd.isna(away_score):
+            continue
+        if int(team_id) == home_id:
+            if home_score > away_score:
+                wins += 1
+            elif home_score < away_score:
+                losses += 1
+        elif int(team_id) == away_id:
+            if away_score > home_score:
+                wins += 1
+            elif away_score < home_score:
+                losses += 1
+
+    total_games = wins + losses
+    if total_games == 0:
+        return None
+    return {
+        "wins": wins,
+        "losses": losses,
+        "win_pct": wins / total_games if total_games else None,
+        "record": f"{wins}-{losses}",
+    }
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_player_game_logs_many(player_id: int, seasons: list[str], season_type: str = "Regular Season") -> pd.DataFrame:

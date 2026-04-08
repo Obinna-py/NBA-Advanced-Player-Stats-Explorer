@@ -336,6 +336,7 @@ def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df:
     for _, s in merged.iterrows():
         season = s.get('SEASON_ID', 'Unknown')
         team   = s.get('TEAM_ABBREVIATION', 'UNK')
+        team_record = s.get('TEAM_RECORD')
 
         ppg = _fmt_num(s.get('PPG'), 1)
         rpg = _fmt_num(s.get('RPG'), 1)
@@ -372,6 +373,7 @@ def generate_player_summary(player_name: str, per_game_df: pd.DataFrame, adv_df:
         lines += [
             "---",
             f"### Season {season} ({team})",
+            f"- **Team Record:** {team_record if pd.notna(team_record) and str(team_record).strip() else '—'}",
             f"- **PPG:** {ppg}, **RPG:** {rpg}, **APG:** {apg}",
             f"- **SPG:** {spg}, **BPG:** {bpg}, **TPG:** {tpg}",
             f"- **Games Played:** {gp}, **Minutes/Game:** {mpg}",
@@ -429,7 +431,7 @@ def build_ai_stat_packet(player_name: str, per_game_df: pd.DataFrame, adv_df: pd
         merged = merged.sort_values(['SEASON_START', 'TEAM_ABBREVIATION'], kind='mergesort')
 
     preferred_fields = [
-        'SEASON_ID', 'TEAM_ABBREVIATION', 'GP',
+        'SEASON_ID', 'TEAM_ABBREVIATION', 'TEAM_RECORD', 'GP',
         'PPG', 'RPG', 'APG', 'SPG', 'BPG', 'TPG', 'MPG',
         'FG%', '3P%', 'FT%',
         'TS%', 'EFG%', 'PPS', '3PAr', 'FTr',
@@ -528,10 +530,12 @@ def compact_player_context(df: pd.DataFrame) -> dict:
     spg = _clamp(spg, 0, 6)
     bpg = _clamp(bpg, 0, 6)
     tpg = _clamp(tpg, 0, 8)
+    team_record = row.get("TEAM_RECORD") if "TEAM_RECORD" in row and pd.notna(row.get("TEAM_RECORD")) else None
 
     return {
         "season": row.get("SEASON_ID", "Unknown"),
         "team": row.get("TEAM_ABBREVIATION", "UNK"),
+        "team_record": team_record,
         "gp": gp,
         "ppg": ppg,
         "rpg": rpg,
@@ -550,7 +554,7 @@ def compact_player_context(df: pd.DataFrame) -> dict:
 
 _DISPLAY_PRIORITY = [
     # identity/context
-    "SEASON_ID", "AGE_APPROX", "TEAM_ABBREVIATION",
+    "SEASON_ID", "AGE_APPROX", "TEAM_ABBREVIATION", "TEAM_RECORD",
     # per-game
     "GP", "MPG", "PPG", "RPG", "APG", "SPG", "BPG", "TPG",
     "3PA/G", "2PA/G",
@@ -566,6 +570,7 @@ _DISPLAY_PRIORITY = [
 # Hide these IDs & internal columns from tables
 _HIDDEN_EXACT = {"PLAYER_ID", "TEAM_ID", "LEAGUE_ID", "SEASON_START", "CFID", "CFPARAMS"}
 _HIDDEN_PREFIXES = ("TEAM_",)  # e.g., merged team context columns
+_VISIBLE_TEAM_FIELDS = {"TEAM_RECORD", "TEAM_W", "TEAM_L", "TEAM_WIN_PCT", "TEAM_ABBREVIATION"}
 
 def order_columns_for_display(df):
     """Return a reordered list of columns with high-priority fields first."""
@@ -580,7 +585,7 @@ def metric_public_cols(df):
     if df is None or df.empty:
         return []
     visible = [c for c in df.columns
-               if c not in _HIDDEN_EXACT and not any(c.startswith(pfx) for pfx in _HIDDEN_PREFIXES)]
+               if c not in _HIDDEN_EXACT and (c in _VISIBLE_TEAM_FIELDS or not any(c.startswith(pfx) for pfx in _HIDDEN_PREFIXES))]
     # keep original df but show in ordered, filtered column set
     ordered = [c for c in order_columns_for_display(df) if c in visible]
     # make sure we don't drop any remaining visible columns that weren't in the priority list

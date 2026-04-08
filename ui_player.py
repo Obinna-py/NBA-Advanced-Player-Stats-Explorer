@@ -8,7 +8,7 @@ import html
 from datetime import datetime
 from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
-from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_balldontlie_league_season_averages
+from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_balldontlie_league_season_averages, get_balldontlie_player_contracts, get_balldontlie_player_contract_aggregates, get_team_record_for_season
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
@@ -24,15 +24,89 @@ def _friendly_ai_error_message(error: Exception) -> str:
     return "AI is unavailable right now. Please try again in a moment."
 
 
+def _fmt_money(value) -> str:
+    num = pd.to_numeric(value, errors="coerce")
+    if pd.isna(num):
+        return "—"
+    return f"${num:,.0f}"
+
+
+def _contract_snapshot(contract_df: pd.DataFrame, aggregate_df: pd.DataFrame) -> dict:
+    latest_contract = contract_df.sort_values("season").iloc[-1] if contract_df is not None and not contract_df.empty else pd.Series(dtype=object)
+    latest_agg = aggregate_df.sort_values("start_year").iloc[-1] if aggregate_df is not None and not aggregate_df.empty else pd.Series(dtype=object)
+    return {
+        "season": latest_contract.get("season"),
+        "cap_hit": latest_contract.get("cap_hit"),
+        "base_salary": latest_contract.get("base_salary"),
+        "total_cash": latest_contract.get("total_cash"),
+        "rank": latest_contract.get("rank"),
+        "team_name": latest_contract.get("team_name"),
+        "average_salary": latest_agg.get("average_salary"),
+        "total_value": latest_agg.get("total_value"),
+        "contract_years": latest_agg.get("contract_years"),
+        "total_guaranteed": latest_agg.get("total_guaranteed"),
+        "contract_status": latest_agg.get("contract_status"),
+        "contract_type": latest_agg.get("contract_type"),
+    }
+
+
+def _add_team_record_column(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "TEAM_RECORD" not in out.columns:
+        out["TEAM_RECORD"] = pd.NA
+    if "TEAM_W" not in out.columns:
+        out["TEAM_W"] = pd.NA
+    if "TEAM_L" not in out.columns:
+        out["TEAM_L"] = pd.NA
+    if "TEAM_WIN_PCT" not in out.columns:
+        out["TEAM_WIN_PCT"] = pd.NA
+
+    for idx, row in out.iterrows():
+        season = row.get("SEASON_ID")
+        team_id = row.get("TEAM_ID")
+        team_abbrev = row.get("TEAM_ABBREVIATION")
+        if not season:
+            continue
+        record = get_team_record_for_season(str(season), team_id=team_id, team_abbreviation=team_abbrev)
+        if not record:
+            continue
+        out.at[idx, "TEAM_RECORD"] = record.get("record")
+        out.at[idx, "TEAM_W"] = record.get("wins")
+        out.at[idx, "TEAM_L"] = record.get("losses")
+        out.at[idx, "TEAM_WIN_PCT"] = record.get("win_pct")
+    return out
+
+
+def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) -> None:
+    fallback_url = get_placeholder_headshot_data_uri()
+    source = headshot_url or fallback_url
+    escaped_alt = html.escape(alt_text or "Player headshot")
+    st.markdown(
+        (
+            f'<img src="{source}" alt="{escaped_alt}" '
+            f'onerror="this.onerror=null;this.src=\'{fallback_url}\';" '
+            f'style="width:{width}px;max-width:100%;aspect-ratio:1/1;object-fit:cover;'
+            'border-radius:18px;background:#111827;border:1px solid rgba(255,255,255,0.08);" />'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _player_scouting_report_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
     summary = generate_player_summary(player_name, pergame_df, adv_df)
     stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
     return (
         "You are an expert NBA scout and analyst. Build a clean player scouting report using only the provided stats.\n"
         "Write in markdown with these exact sections: Offensive Identity, Shooting Profile, Playmaking, Defense, "
         "Rebounding / Physicality, Weaknesses, Best Team Fit, Bottom Line.\n"
         "Use specific stats throughout. Keep it detailed but readable for a serious basketball fan. "
         "Do not mention any other players unless the provided stats directly require a comparison.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
         f"Structured stat packet:\n{stat_packet}\n\n"
         f"Season summary:\n{summary}\n"
     )
@@ -41,6 +115,9 @@ def _player_scouting_report_prompt(player_name: str, pergame_df: pd.DataFrame, a
 def _player_ai_system_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
     summary = generate_player_summary(player_name, pergame_df, adv_df)
     stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
     return (
         "You are an expert NBA analyst writing for a curious basketball fan.\n\n"
         "Answer questions using ONLY the stats provided below.\n"
@@ -52,6 +129,7 @@ def _player_ai_system_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df:
         "Prefer the structured stat packet first, then use the season summary for extra context.\n"
         "When useful, compare efficiency, volume, playmaking load, rebounding, and trends across seasons.\n"
         "End with a short bottom-line takeaway sentence.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
         f"Structured stat packet:\n{stat_packet}\n\n"
         f"Season summary:\n{summary}\n\n"
         "Note: Some advanced metrics are estimates from team-context formulas."
@@ -61,6 +139,9 @@ def _player_ai_system_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df:
 def _player_team_fit_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame, fit_context: str) -> str:
     summary = generate_player_summary(player_name, pergame_df, adv_df)
     stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
     focus = fit_context.strip() or "General NBA contender fit"
     return (
         "You are an expert NBA roster-building analyst. Evaluate this player's team fit using only the provided stats.\n"
@@ -68,6 +149,7 @@ def _player_team_fit_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: 
         "Potential Fit Concerns, Best Roles, Bottom Line.\n"
         "Use specific stats throughout. Focus on lineup fit, scalability, usage fit, spacing, playmaking fit, and defensive scheme fit.\n"
         "Do not mention random players unless the fit context directly calls for it.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
         f"Fit context:\n{focus}\n\n"
         f"Structured stat packet:\n{stat_packet}\n\n"
         f"Season summary:\n{summary}\n"
@@ -77,6 +159,9 @@ def _player_team_fit_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: 
 def _player_what_changed_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame, phases: dict) -> str:
     summary = generate_player_summary(player_name, pergame_df, adv_df)
     stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
     early = ", ".join(phases.get("early", [])) or "—"
     prime = ", ".join(phases.get("prime", [])) or "—"
     late = ", ".join(phases.get("late", [])) or "—"
@@ -88,6 +173,7 @@ def _player_what_changed_prompt(player_name: str, pergame_df: pd.DataFrame, adv_
         "What Improved, What Declined or Shifted, Bottom Line.\n"
         "Use specific stats and trends throughout. Focus on role, efficiency, shooting profile, playmaking, defense, and usage changes.\n"
         "Do not mention other players unless directly required by the provided stats.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
         f"Career phases:\nEarly Career: {early}\nPrime: {prime}\nLate Career: {late}\nPeak Season: {peak}\n\n"
         f"Structured stat packet:\n{stat_packet}\n\n"
         f"Season summary:\n{summary}\n"
@@ -102,6 +188,9 @@ def _player_role_recommendation_prompt(
 ) -> str:
     summary = generate_player_summary(player_name, pergame_df, adv_df)
     stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
     primary = role_summary.get("primary", "—")
     secondary = role_summary.get("secondary", "—")
     style_tags = ", ".join(role_summary.get("style_tags", []) or []) or "—"
@@ -112,7 +201,48 @@ def _player_role_recommendation_prompt(
         "Defensive Responsibilities, Ideal Usage Level, Best Supporting Cast, Role Risks, Bottom Line.\n"
         "Be specific about whether the player projects best as a primary engine, secondary creator, off-ball scorer, connector, "
         "rim protector, floor spacer, defensive stopper, or other concrete NBA role. Use stats throughout.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
         f"Archetype summary:\nPrimary: {primary}\nSecondary: {secondary}\nStyle Tags: {style_tags}\nImpact Tags: {impact_tags}\n\n"
+        f"Structured stat packet:\n{stat_packet}\n\n"
+        f"Season summary:\n{summary}\n"
+    )
+
+
+def _player_contract_value_prompt(
+    player_name: str,
+    pergame_df: pd.DataFrame,
+    adv_df: pd.DataFrame,
+    contract_df: pd.DataFrame,
+    aggregate_df: pd.DataFrame,
+    age_value,
+) -> str:
+    summary = generate_player_summary(player_name, pergame_df, adv_df)
+    stat_packet = build_ai_stat_packet(player_name, pergame_df, adv_df)
+    latest_team_record = "—"
+    if adv_df is not None and not adv_df.empty and "TEAM_RECORD" in adv_df.columns:
+        latest_team_record = adv_df.iloc[-1].get("TEAM_RECORD") or "—"
+    contract_snapshot = _contract_snapshot(contract_df, aggregate_df)
+    contract_lines = [
+        f"Current contract season: {contract_snapshot.get('season') or '—'}",
+        f"Cap hit: {_fmt_money(contract_snapshot.get('cap_hit'))}",
+        f"Base salary: {_fmt_money(contract_snapshot.get('base_salary'))}",
+        f"Total cash: {_fmt_money(contract_snapshot.get('total_cash'))}",
+        f"Average salary: {_fmt_money(contract_snapshot.get('average_salary'))}",
+        f"Total value: {_fmt_money(contract_snapshot.get('total_value'))}",
+        f"Contract years: {contract_snapshot.get('contract_years') or '—'}",
+        f"Total guaranteed: {_fmt_money(contract_snapshot.get('total_guaranteed'))}",
+        f"Contract type: {contract_snapshot.get('contract_type') or '—'}",
+        f"Contract status: {contract_snapshot.get('contract_status') or '—'}",
+        f"Current age: {age_value if age_value is not None else '—'}",
+    ]
+    return (
+        "You are an expert NBA salary-cap and player-value analyst. Decide whether this player looks overpaid, fairly paid, or underpaid "
+        "based on the provided stats, career context, age, and contract snapshot.\n"
+        "Write in markdown with these exact sections: Current Contract Snapshot, Performance vs Pay, Why He Might Be Underpaid, "
+        "Why He Might Be Overpaid, Fair Value Range, Final Verdict.\n"
+        "Use specific stats and salary numbers throughout. Keep the tone balanced and analytical, not hot-take driven.\n\n"
+        f"Current team record: {latest_team_record}\n\n"
+        f"Contract snapshot:\n" + "\n".join(contract_lines) + "\n\n"
         f"Structured stat packet:\n{stat_packet}\n\n"
         f"Season summary:\n{summary}\n"
     )
@@ -198,6 +328,27 @@ def render_player_team_fit_page() -> None:
         st.markdown(report)
     else:
         st.info("No team fit analysis is available right now. Generate one from the player's Stats page first.")
+
+
+def render_player_contract_value_page() -> None:
+    st.markdown("## 💸 Contract Value Analyzer")
+    player_name = st.session_state.get("player_contract_value_player_name") or "Selected Player"
+    contract_summary = st.session_state.get("player_contract_value_summary") or "Contract snapshot unavailable"
+    st.caption(player_name)
+    st.caption(contract_summary)
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Stats", key="back_to_stats_from_contract_value", use_container_width=True):
+            st.session_state["player_report_mode"] = None
+            st.session_state["requested_active_view"] = "📊 Stats"
+            st.rerun()
+
+    report = st.session_state.get("player_contract_value_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No contract value analysis is available right now. Generate one from the player's Stats page first.")
 
 
 def render_player_ai_chat_page(model) -> None:
@@ -329,8 +480,7 @@ def info_tab(player):
     st.subheader("Player Info")
     c1, c2 = st.columns([1, 2])
     with c1:
-        if headshot_url:
-            st.image(headshot_url, width=220)
+        _render_headshot_image(headshot_url, 220, player.get("full_name", "Player"))
         if pd.notna(team_id) and info.attrs.get("provider") != "balldontlie":
             st.image(team_logo_url, width=120)
     with c2:
@@ -369,8 +519,7 @@ def balldontlie_info_tab(player):
     headshot_url = get_nba_headshot_url(player["id"], player_name=player.get("full_name"), player_source=player.get("source"))
     c1, c2 = st.columns([1, 2])
     with c1:
-        if headshot_url:
-            st.image(headshot_url, width=220)
+        _render_headshot_image(headshot_url, 220, player.get("full_name", "Player"))
     with c2:
         st.markdown(f"### {player.get('full_name', 'Unknown Player')}")
         st.write(f"**Team:** {player.get('team_name') or '—'}")
@@ -789,6 +938,7 @@ def stats_tab(player, model):
         adv = pd.DataFrame()
     
     adv = add_per_game_columns(adv, raw_pergame)
+    adv = _add_team_record_column(adv)
 
     full_adv = adv
 
@@ -798,13 +948,16 @@ def stats_tab(player, model):
         st.session_state.pop("player_what_changed_output", None)
         st.session_state.pop("player_role_output", None)
         st.session_state.pop("player_team_fit_output", None)
+        st.session_state.pop("player_contract_value_output", None)
         st.session_state.pop("player_report_player_name", None)
         st.session_state.pop("player_what_changed_player_name", None)
         st.session_state.pop("player_role_player_name", None)
         st.session_state.pop("player_team_fit_player_name", None)
+        st.session_state.pop("player_contract_value_player_name", None)
         st.session_state.pop("player_what_changed_phase_summary", None)
         st.session_state.pop("player_role_archetype_summary", None)
         st.session_state.pop("player_team_fit_context", None)
+        st.session_state.pop("player_contract_value_summary", None)
         st.session_state["player_ai_output_signature"] = phase_player_key
     phase_store = st.session_state.setdefault("career_phases_by_player", {})
     if model and phase_player_key not in phase_store and full_adv is not None and not full_adv.empty:
@@ -843,6 +996,17 @@ def stats_tab(player, model):
     latest_src = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
     if latest_src is not None and not latest_src.empty:
         latest = selected_summary if selected_summary is not None else latest_src.iloc[-1]
+        contract_df = get_balldontlie_player_contracts(
+            player["id"],
+            player_name=player.get("full_name"),
+            player_source=player.get("source"),
+        )
+        contract_agg_df = get_balldontlie_player_contract_aggregates(
+            player["id"],
+            player_name=player.get("full_name"),
+            player_source=player.get("source"),
+        )
+        contract_snapshot = _contract_snapshot(contract_df, contract_agg_df)
         headshot_url = get_nba_headshot_url(
             player["id"],
             player_name=player.get("full_name"),
@@ -850,12 +1014,14 @@ def stats_tab(player, model):
         )
         hero_col, stats_col = st.columns([1, 3])
         with hero_col:
-            if headshot_url:
-                st.image(headshot_url, width=170)
+            _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
             st.caption(player.get("full_name", ""))
         with stats_col:
             if selected_summary_label and selected_summary_label in summary_captions:
                 render_stat_text(summary_captions[selected_summary_label], small=True)
+            latest_team_record = latest.get("TEAM_RECORD")
+            if pd.notna(latest_team_record) and latest_team_record:
+                render_stat_text(f"Current team record: {latest_team_record}", small=True)
             ppg_val = pd.to_numeric(latest.get("PPG", latest.get("PTS", np.nan)), errors="coerce")
             rpg_val = pd.to_numeric(latest.get("RPG", latest.get("REB", np.nan)), errors="coerce")
             apg_val = pd.to_numeric(latest.get("APG", latest.get("AST", np.nan)), errors="coerce")
@@ -867,6 +1033,27 @@ def stats_tab(player, model):
                 ("APG", f"{apg_val:.1f}" if pd.notna(apg_val) else "—"),
                 ("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—"),
             ])
+        if contract_df is not None and not contract_df.empty:
+            st.markdown("### 💸 Contract Snapshot")
+            snap_cols = st.columns(4)
+            with snap_cols[0]:
+                st.metric("Cap Hit", _fmt_money(contract_snapshot.get("cap_hit")))
+            with snap_cols[1]:
+                st.metric("Avg Salary", _fmt_money(contract_snapshot.get("average_salary")))
+            with snap_cols[2]:
+                years = pd.to_numeric(contract_snapshot.get("contract_years"), errors="coerce")
+                st.metric("Contract Years", str(int(years)) if pd.notna(years) else "—")
+            with snap_cols[3]:
+                st.metric("Guaranteed", _fmt_money(contract_snapshot.get("total_guaranteed")))
+            contract_caption = []
+            if contract_snapshot.get("season"):
+                contract_caption.append(f"Season: {contract_snapshot.get('season')}")
+            if contract_snapshot.get("contract_type"):
+                contract_caption.append(f"Type: {contract_snapshot.get('contract_type')}")
+            if contract_snapshot.get("contract_status"):
+                contract_caption.append(f"Status: {contract_snapshot.get('contract_status')}")
+            if contract_caption:
+                render_stat_text(" • ".join(contract_caption), small=True)
 
     if "show_player_ai_rail" not in st.session_state:
         st.session_state["show_player_ai_rail"] = True
@@ -1197,6 +1384,68 @@ def stats_tab(player, model):
                         st.caption(f"Setup details: {AI_SETUP_ERROR}")
                     else:
                         st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("Contract Value Analyzer", expanded=False):
+                contract_df = get_balldontlie_player_contracts(
+                    player["id"],
+                    player_name=player.get("full_name"),
+                    player_source=player.get("source"),
+                )
+                contract_agg_df = get_balldontlie_player_contract_aggregates(
+                    player["id"],
+                    player_name=player.get("full_name"),
+                    player_source=player.get("source"),
+                )
+                if model and contract_df is not None and not contract_df.empty:
+                    birthdate = get_player_birthdate(
+                        player["id"],
+                        player_name=player.get("full_name"),
+                        player_source=player.get("source"),
+                    )
+                    age_value = _age_from_birthdate(birthdate) if birthdate else None
+                    snapshot = _contract_snapshot(contract_df, contract_agg_df)
+                    contract_summary = (
+                        f"Cap Hit: {_fmt_money(snapshot.get('cap_hit'))} • "
+                        f"Avg Salary: {_fmt_money(snapshot.get('average_salary'))} • "
+                        f"Years: {int(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) if pd.notna(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) else '—'}"
+                    )
+                    st.caption("Generate a dedicated page judging whether the player's contract looks overpaid, fair, or underpaid.")
+                    if st.button("Generate Contract Value Analysis", key="generate_player_contract_value", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = full_adv if full_adv is not None and not full_adv.empty else adv
+                        prompt = _player_contract_value_prompt(
+                            player["full_name"],
+                            pergame_for_summary,
+                            adv_for_summary,
+                            contract_df,
+                            contract_agg_df,
+                            age_value,
+                        )
+                        with st.spinner("Analyzing contract value…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.6)
+                                st.session_state["player_contract_value_output"] = text or "No response."
+                                st.session_state["player_contract_value_player_name"] = player["full_name"]
+                                st.session_state["player_contract_value_summary"] = contract_summary
+                                st.session_state["player_report_mode"] = "contract-value"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_contract_value_output"):
+                        st.caption("A contract value analysis is already available.")
+                        if st.button("Open Contract Value Page", key="open_player_contract_value_page", use_container_width=True):
+                            st.session_state["player_report_mode"] = "contract-value"
+                            st.rerun()
+                else:
+                    if not model:
+                        if AI_SETUP_ERROR:
+                            st.info("AI is unavailable in this deployment right now.")
+                            st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                        else:
+                            st.info("Add your OpenAI API key to enable AI analysis.")
+                    else:
+                        st.info("Contract data is unavailable for this player right now.")
 
             with st.expander("Ask the AI Assistant", expanded=True):
                 if model:

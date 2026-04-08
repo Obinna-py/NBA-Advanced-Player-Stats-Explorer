@@ -16,7 +16,7 @@ except Exception:
     st_searchbox = None
 
 # --- project imports
-from fetch import get_player_career, get_head_to_head_games, get_player_info, get_player_birthdate, search_players, get_nba_headshot_url
+from fetch import get_player_career, get_head_to_head_games, get_player_info, get_player_birthdate, search_players, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_team_record_for_season
 from metrics import (
     compute_full_advanced_stats,
     add_per_game_columns,
@@ -233,6 +233,21 @@ def _inject_sticky_ai_rail_css(anchor_class: str) -> None:
         }}
         </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) -> None:
+    fallback_url = get_placeholder_headshot_data_uri()
+    source = headshot_url or fallback_url
+    escaped_alt = html.escape(alt_text or "Player headshot")
+    st.markdown(
+        (
+            f'<img src="{source}" alt="{escaped_alt}" '
+            f'onerror="this.onerror=null;this.src=\'{fallback_url}\';" '
+            f'style="width:{width}px;max-width:100%;aspect-ratio:1/1;object-fit:cover;'
+            'border-radius:18px;background:#111827;border:1px solid rgba(255,255,255,0.08);" />'
+        ),
         unsafe_allow_html=True,
     )
 
@@ -524,6 +539,7 @@ def _make_readable_stats_table(df: pd.DataFrame):
     rename = {
         "SEASON_ID": "Season",
         "TEAM_ABBREVIATION": "Team",
+        "TEAM_RECORD": "Team Record",
         "AGE_APPROX": "Age",
 
         # per-game (more explicit)
@@ -560,7 +576,7 @@ def _make_readable_stats_table(df: pd.DataFrame):
 
     # 4) Preferred order (only keep those that actually exist)
     preferred = [
-        "Season", "Team", "Age",
+        "Season", "Age", "Team", "Team Record",
         "MIN/G", "PTS/G", "REB/G", "AST/G", "STL/G", "BLK/G", "TOV/G",
         "3PA/G", "2PA/G",
         "FG%", "3P%", "FT%", "TS%", "eFG%",
@@ -631,6 +647,35 @@ def _add_age_column(df: pd.DataFrame, birth_year: int | None) -> pd.DataFrame:
         out["AGE_APPROX"] = np.nan
         return out
     out["AGE_APPROX"] = out["SEASON_START"].astype(int) - int(birth_year)
+    return out
+
+
+def _add_team_record_column(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "TEAM_RECORD" not in out.columns:
+        out["TEAM_RECORD"] = pd.NA
+    if "TEAM_W" not in out.columns:
+        out["TEAM_W"] = pd.NA
+    if "TEAM_L" not in out.columns:
+        out["TEAM_L"] = pd.NA
+    if "TEAM_WIN_PCT" not in out.columns:
+        out["TEAM_WIN_PCT"] = pd.NA
+
+    for idx, row in out.iterrows():
+        season = row.get("SEASON_ID")
+        team_id = row.get("TEAM_ID")
+        team_abbrev = row.get("TEAM_ABBREVIATION")
+        if not season:
+            continue
+        record = get_team_record_for_season(str(season), team_id=team_id, team_abbreviation=team_abbrev)
+        if not record:
+            continue
+        out.at[idx, "TEAM_RECORD"] = record.get("record")
+        out.at[idx, "TEAM_W"] = record.get("wins")
+        out.at[idx, "TEAM_L"] = record.get("losses")
+        out.at[idx, "TEAM_WIN_PCT"] = record.get("win_pct")
     return out
 
 
@@ -2015,8 +2060,7 @@ def render_compare_tab(primary_player: dict, model=None):
                 player_name=player.get("full_name"),
                 player_source=player.get("source"),
             )
-            if headshot:
-                st.image(headshot, width=150)
+            _render_headshot_image(headshot, 150, player.get("full_name", "Player"))
             st.markdown(f"**{player['full_name']}**")
             try:
                 info = get_player_info(
@@ -2123,6 +2167,9 @@ def render_compare_tab(primary_player: dict, model=None):
         scoped_raw_pg = _add_age_column(_add_season_start(scoped_raw_pg), birth_year)
         scoped_raw_t = _add_age_column(_add_season_start(scoped_raw_t), birth_year)
         scoped_adv = _add_age_column(_add_season_start(scoped_adv), birth_year)
+        scoped_raw_pg = _add_team_record_column(scoped_raw_pg)
+        scoped_raw_t = _add_team_record_column(scoped_raw_t)
+        scoped_adv = _add_team_record_column(scoped_adv)
         chart_src = scoped_adv.copy() if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg.copy()
         ctx_src = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
         summary_source = scoped_adv if scoped_adv is not None and not scoped_adv.empty else scoped_raw_pg
