@@ -704,6 +704,60 @@ def _get_balldontlie_head_to_head_games(
     return merged
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_balldontlie_player_game_logs(
+    player_id: int,
+    seasons: list[str],
+    *,
+    player_name: str | None = None,
+    player_source: str | None = None,
+    season_type: str = "Regular Season",
+) -> pd.DataFrame:
+    bd_player_id = _resolve_balldontlie_player_id(player_id, player_name=player_name, player_source=player_source)
+    if not bd_player_id or not seasons:
+        return pd.DataFrame()
+
+    season_years = []
+    for s in seasons:
+        try:
+            season_years.append(int(str(s)[:4]))
+        except Exception:
+            continue
+    if not season_years:
+        return pd.DataFrame()
+
+    params = {
+        "player_ids[]": [bd_player_id],
+        "seasons[]": season_years,
+        "per_page": 100,
+        "postseason": str(season_type == "Playoffs").lower(),
+    }
+
+    all_rows = []
+    cursor = None
+    while True:
+        req_params = dict(params)
+        if cursor is not None:
+            req_params["cursor"] = cursor
+        payload = _balldontlie_get("/v1/stats", params=req_params, timeout=max(_BALLDONTLIE_TIMEOUT_S, 8))
+        batch = payload.get("data", []) or []
+        all_rows.extend(batch)
+        cursor = (payload.get("meta") or {}).get("next_cursor")
+        if not cursor or not batch:
+            break
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    logs = pd.DataFrame([_balldontlie_stat_row_to_log_row(row) for row in all_rows])
+    if logs.empty:
+        return logs
+
+    logs = logs.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+    logs.attrs["provider"] = "balldontlie"
+    return logs
+
+
 def _build_balldontlie_stats_row(player: dict, season: int, base_stats: dict, adv_stats: dict, per_mode: str) -> dict:
     team = player.get("team", {}) or {}
     gp = float(base_stats.get("gp") or 0)

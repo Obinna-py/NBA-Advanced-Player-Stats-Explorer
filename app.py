@@ -15,7 +15,13 @@ from fetch import (
     add_player_to_watchlist,
     remove_player_from_watchlist,
 )
-from metrics import find_players_by_natural_language
+from metrics import (
+    find_players_by_natural_language,
+    find_players_by_custom_filters,
+    custom_stat_finder_metric_labels,
+    custom_stat_finder_role_labels,
+    custom_stat_finder_tag_labels,
+)
 from ui_player import (
     info_tab,
     stats_tab,
@@ -28,9 +34,11 @@ from ui_player import (
     render_player_role_recommendation_page,
     render_player_contract_value_page,
 )
+from ui_value import value_tab
 from ui_compare import (
     render_compare_tab,
     render_compare_scouting_report_page,
+    render_compare_what_changed_page,
     render_compare_ai_chat_page,
     render_compare_debate_page,
 )
@@ -45,6 +53,7 @@ if AI_SETUP_ERROR:
 _VIEW_TO_TOKEN = {
     "📋 Player Info": "info",
     "📊 Stats": "stats",
+    "💸 Value & Props": "value",
     "🤝 Compare Players": "compare",
 }
 _TOKEN_TO_VIEW = {token: label for label, token in _VIEW_TO_TOKEN.items()}
@@ -71,6 +80,9 @@ _NL_ARCHETYPE_OPTIONS = [
     "stretch rim protector",
     "unicorn big",
 ]
+_CUSTOM_STAT_METRIC_OPTIONS = ["None"] + custom_stat_finder_metric_labels()
+_CUSTOM_ROLE_OPTIONS = custom_stat_finder_role_labels()
+_CUSTOM_TAG_OPTIONS = custom_stat_finder_tag_labels()
 
 _SEARCHBOX_STYLE_OVERRIDES = {
     "searchbox": {
@@ -139,6 +151,8 @@ def _open_player(selected_player: dict) -> None:
     st.session_state["compare_players"] = []
     st.session_state["nl_results"] = None
     st.session_state["nl_meta"] = None
+    st.session_state["custom_results"] = None
+    st.session_state["custom_meta"] = None
     st.session_state["active_view"] = "📊 Stats"
     st.session_state["search_feedback"] = None
     st.session_state["player_report_mode"] = None
@@ -273,6 +287,8 @@ for key, default in [
     ("compare_players", []),
     ("nl_results", None),
     ("nl_meta", None),
+    ("custom_results", None),
+    ("custom_meta", None),
     ("compare_report_mode", None),
     ("player_report_mode", None),
     ("requested_active_view", None),
@@ -282,6 +298,8 @@ for key, default in [
 
 if "active_view" not in st.session_state:
     st.session_state["active_view"] = "📊 Stats"
+if "custom_stat_rule_count" not in st.session_state:
+    st.session_state["custom_stat_rule_count"] = 3
 
 _load_share_state_from_url()
 
@@ -348,6 +366,84 @@ with st.sidebar:
         placeholder="Example: elite rim-protecting bigs with scoring punch",
     )
     nl_search_clicked = st.button("Find Players", use_container_width=True)
+    st.divider()
+    st.subheader("Custom Stat Finder")
+    rule_controls_left, rule_controls_right = st.columns(2)
+    with rule_controls_left:
+        if st.button("Add rule", use_container_width=True, key="custom_stat_add_rule"):
+            st.session_state["custom_stat_rule_count"] = min(int(st.session_state.get("custom_stat_rule_count", 3)) + 1, 10)
+            st.rerun()
+    with rule_controls_right:
+        if st.button("Remove rule", use_container_width=True, key="custom_stat_remove_rule"):
+            st.session_state["custom_stat_rule_count"] = max(int(st.session_state.get("custom_stat_rule_count", 3)) - 1, 1)
+            st.rerun()
+    with st.form("custom_stat_finder_form"):
+        cs_position = st.selectbox(
+            "Position family",
+            ["Any", "Guard", "Wing", "Big"],
+            index=0,
+            key="custom_stat_position",
+        )
+        cs_role = st.selectbox(
+            "Primary role filter",
+            _CUSTOM_ROLE_OPTIONS,
+            index=0,
+            key="custom_stat_role_filter",
+        )
+        cs_tag = st.selectbox(
+            "Archetype / tag filter",
+            _CUSTOM_TAG_OPTIONS,
+            index=0,
+            key="custom_stat_tag_filter",
+        )
+        cs_percentile_metric = st.selectbox(
+            "Percentile gate metric",
+            ["None"] + custom_stat_finder_metric_labels(),
+            index=0,
+            key="custom_stat_percentile_metric",
+        )
+        cs_min_percentile = st.slider(
+            "Minimum percentile",
+            min_value=50,
+            max_value=99,
+            value=75,
+            step=1,
+            key="custom_stat_min_percentile",
+        )
+        cs_min_gp = st.slider("Min games", min_value=5, max_value=82, value=20, step=1, key="custom_stat_min_gp")
+        cs_min_mpg = st.slider("Min minutes per game", min_value=5.0, max_value=36.0, value=15.0, step=1.0, key="custom_stat_min_mpg")
+        st.caption(f"Active rules: {int(st.session_state.get('custom_stat_rule_count', 3))}")
+        for idx in range(int(st.session_state.get("custom_stat_rule_count", 3))):
+            st.caption(f"Rule {idx + 1}")
+            metric_col, op_col, value_col = st.columns([1.5, 0.9, 1.1])
+            with metric_col:
+                st.selectbox(
+                    "Metric",
+                    _CUSTOM_STAT_METRIC_OPTIONS,
+                    index=0,
+                    key=f"custom_stat_metric_{idx}",
+                    label_visibility="collapsed",
+                )
+            with op_col:
+                st.selectbox(
+                    "Op",
+                    [">=", "<="],
+                    index=0,
+                    key=f"custom_stat_op_{idx}",
+                    label_visibility="collapsed",
+                )
+            with value_col:
+                st.number_input(
+                    "Value",
+                    value=0.0,
+                    step=0.5,
+                    key=f"custom_stat_value_{idx}",
+                    label_visibility="collapsed",
+                )
+        cs_sort_by = st.selectbox("Sort by", custom_stat_finder_metric_labels(), index=0, key="custom_stat_sort_by")
+        cs_sort_dir = st.selectbox("Sort direction", ["Highest first", "Lowest first"], index=0, key="custom_stat_sort_dir")
+        cs_limit = st.slider("Result limit", min_value=5, max_value=40, value=20, step=1, key="custom_stat_limit")
+        custom_search_clicked = st.form_submit_button("Run Custom Finder", use_container_width=True)
     st.divider()
     st.subheader("Watchlist")
     watchlist_players = get_watchlist_players()
@@ -421,6 +517,8 @@ if search_clicked:
         st.session_state["compare_players"] = []
         st.session_state["nl_results"] = None
         st.session_state["nl_meta"] = None
+        st.session_state["custom_results"] = None
+        st.session_state["custom_meta"] = None
         st.session_state["search_feedback"] = {
             "kind": "error",
             "message": (
@@ -445,10 +543,51 @@ if nl_search_clicked:
     )
     st.session_state["nl_results"] = results_df
     st.session_state["nl_meta"] = meta
+    st.session_state["custom_results"] = None
+    st.session_state["custom_meta"] = None
     if results_df is not None and not results_df.empty:
         st.session_state["player"] = None
         st.session_state["matches"] = []
         st.session_state["search_feedback"] = None
+
+if custom_search_clicked:
+    custom_filters = []
+    for idx in range(int(st.session_state.get("custom_stat_rule_count", 3))):
+        metric = st.session_state.get(f"custom_stat_metric_{idx}")
+        op = st.session_state.get(f"custom_stat_op_{idx}", ">=")
+        value = st.session_state.get(f"custom_stat_value_{idx}", 0.0)
+        if metric and metric != "None":
+            custom_filters.append({"metric": metric, "op": op, "value": value})
+
+    position_family = {
+        "Any": None,
+        "Guard": "guard",
+        "Wing": "wing",
+        "Big": "big",
+    }.get(st.session_state.get("custom_stat_position", "Any"))
+
+    results_df, meta = find_players_by_custom_filters(
+        season=None,
+        filters=custom_filters,
+        position_family=position_family,
+        percentile_metric=None if st.session_state.get("custom_stat_percentile_metric", "None") == "None" else st.session_state.get("custom_stat_percentile_metric"),
+        min_percentile=int(st.session_state.get("custom_stat_min_percentile", 75)) if st.session_state.get("custom_stat_percentile_metric", "None") != "None" else None,
+        primary_role=None if st.session_state.get("custom_stat_role_filter", "Any") == "Any" else st.session_state.get("custom_stat_role_filter"),
+        archetype_tag=None if st.session_state.get("custom_stat_tag_filter", "Any") == "Any" else st.session_state.get("custom_stat_tag_filter"),
+        min_gp=int(st.session_state.get("custom_stat_min_gp", 20)),
+        min_mpg=float(st.session_state.get("custom_stat_min_mpg", 15.0)),
+        sort_by=st.session_state.get("custom_stat_sort_by", "PPG"),
+        sort_desc=(st.session_state.get("custom_stat_sort_dir", "Highest first") == "Highest first"),
+        limit=int(st.session_state.get("custom_stat_limit", 20)),
+    )
+    st.session_state["custom_results"] = results_df
+    st.session_state["custom_meta"] = meta
+    if results_df is not None and not results_df.empty:
+        st.session_state["player"] = None
+        st.session_state["matches"] = []
+        st.session_state["search_feedback"] = None
+        st.session_state["nl_results"] = None
+        st.session_state["nl_meta"] = None
 
 feedback = st.session_state.get("search_feedback")
 if feedback:
@@ -501,6 +640,51 @@ if nl_results is not None and not st.session_state.get("player"):
                     st.session_state["search_feedback"] = None
                     st.session_state["nl_results"] = None
                     st.session_state["nl_meta"] = None
+                    st.session_state["custom_results"] = None
+                    st.session_state["custom_meta"] = None
+                    st.rerun()
+
+custom_results = st.session_state.get("custom_results")
+custom_meta = st.session_state.get("custom_meta") or {}
+if custom_results is not None and not st.session_state.get("player"):
+    st.subheader("Custom Stat Finder")
+    if custom_meta.get("summary"):
+        st.caption(
+            f"{custom_meta['summary']} Searching the {custom_meta.get('season', 'latest')} regular season player pool."
+        )
+    if custom_meta.get("filter_summary"):
+        st.caption(f"Filters: {custom_meta['filter_summary']}")
+    if custom_meta.get("message"):
+        st.info(custom_meta["message"])
+
+    if isinstance(custom_results, type(None)) or custom_results.empty:
+        st.info("Use the sidebar screener to find players by custom stat rules.")
+    else:
+        display_cols = [c for c in custom_results.columns if c != "Player Token"]
+        st.dataframe(custom_results[display_cols], use_container_width=True, hide_index=True)
+
+        open_options = {
+            f"{row['Player']} ({row['Position']})": row["Player Token"]
+            for _, row in custom_results.iterrows()
+            if row.get("Player Token")
+        }
+        if open_options:
+            open_choice = st.selectbox(
+                "Open a player from custom stat finder",
+                ["Select a player"] + list(open_options.keys()),
+                index=0,
+                key="custom_open_choice",
+            )
+            if open_choice != "Select a player" and st.button("Open Player Page", key="custom_open_player"):
+                selected = player_from_share_token(open_options[open_choice])
+                if selected:
+                    st.session_state["player"] = selected
+                    st.session_state["matches"] = []
+                    st.session_state["compare_players"] = []
+                    st.session_state["active_view"] = "📊 Stats"
+                    st.session_state["search_feedback"] = None
+                    st.session_state["custom_results"] = None
+                    st.session_state["custom_meta"] = None
                     st.rerun()
 
 if st.session_state["matches"]:
@@ -521,6 +705,13 @@ if st.session_state["player"]:
         and st.session_state.get("compare_report_mode") == "scouting"
     ):
         render_compare_scouting_report_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "🤝 Compare Players"
+        and st.session_state.get("compare_report_mode") == "what-changed"
+    ):
+        render_compare_what_changed_page()
         _sync_share_state_to_url()
         st.stop()
     if (
@@ -587,7 +778,7 @@ if st.session_state["player"]:
         _sync_share_state_to_url()
         st.stop()
     if (
-        st.session_state.get("active_view") == "📊 Stats"
+        st.session_state.get("active_view") == "💸 Value & Props"
         and st.session_state.get("player_report_mode") == "contract-value"
     ):
         render_player_contract_value_page()
@@ -596,7 +787,7 @@ if st.session_state["player"]:
 
     view = st.radio(
         "View",
-        ["📋 Player Info", "📊 Stats", "🤝 Compare Players"],
+        ["📋 Player Info", "📊 Stats", "💸 Value & Props", "🤝 Compare Players"],
         horizontal=True,
         key="active_view",
         label_visibility="collapsed",
@@ -605,6 +796,8 @@ if st.session_state["player"]:
         info_tab(st.session_state["player"])
     elif view == "📊 Stats":
         stats_tab(st.session_state["player"], model)
+    elif view == "💸 Value & Props":
+        value_tab(st.session_state["player"], model)
     else:
         render_compare_tab(st.session_state["player"], model)
 else:

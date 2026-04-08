@@ -1826,6 +1826,47 @@ def _build_around_prompt(player_frames: list[dict], scope_label: str, lens: str)
     )
 
 
+def _compare_what_changed_prompt(player_frames: list[dict]) -> str:
+    blocks = []
+    for item in player_frames:
+        full_adv = item.get("full_adv", pd.DataFrame())
+        full_raw_pg = item.get("full_raw_pg", pd.DataFrame())
+        if full_adv is None or full_adv.empty:
+            continue
+        phases = item.get("phases") or {}
+        early = ", ".join(phases.get("early", [])) or "—"
+        prime = ", ".join(phases.get("prime", [])) or "—"
+        late = ", ".join(phases.get("late", [])) or "—"
+        peak = phases.get("peak_season") or "—"
+        summary = generate_player_summary(
+            item["name"],
+            full_raw_pg if full_raw_pg is not None and not full_raw_pg.empty else full_adv,
+            full_adv,
+        )
+        blocks.append(
+            f"{item['name']}\n"
+            f"Career phases:\n"
+            f"- Early Career: {early}\n"
+            f"- Prime: {prime}\n"
+            f"- Late Career: {late}\n"
+            f"- Peak Season: {peak}\n\n"
+            f"Full-career season summary:\n{summary}"
+        )
+
+    joined_names = ", ".join(item["name"] for item in player_frames)
+    return (
+        "You are an expert NBA development analyst. Compare how these players changed over the course of their careers "
+        "using only the provided full-career stats and AI-labeled career phases.\n"
+        "This analysis should use full career context even if the visible compare tab is on a smaller view like Latest Season or Prime.\n"
+        "Write in markdown with these exact sections: Each Player's Arc, Biggest Growth Areas, Biggest Declines or Shifts, "
+        "How Their Evolutions Differ, Most Complete Development Arc, Bottom Line.\n"
+        "Use specific stats and phase windows throughout. Focus on role changes, scoring burden, shooting growth, playmaking evolution, "
+        "defensive changes, and how their peak versions differ from their early and late-career identities.\n\n"
+        + "\n\n".join(blocks)
+        + f"\n\nPlayers: {joined_names}"
+    )
+
+
 def _compare_debate_prompt(player_frames: list[dict], scope_label: str, lens: str, custom_focus: str = "") -> str:
     greatest_lenses = {
         "Greatest Overall Career",
@@ -1920,6 +1961,27 @@ def render_compare_scouting_report_page() -> None:
         st.markdown(report)
     else:
         st.info("No scouting report is available right now. Generate one from the Compare tab first.")
+
+
+def render_compare_what_changed_page() -> None:
+    st.markdown("## 🔄 What Changed? (Compare Mode)")
+    compare_names = st.session_state.get("compare_what_changed_players") or []
+    if compare_names:
+        st.caption(f"Players: {', '.join(compare_names)}")
+    st.caption("Analysis scope: Full career evolution")
+
+    top_left, top_right = st.columns([4.5, 1.2])
+    with top_right:
+        if st.button("Back to Compare", key="back_to_compare_from_what_changed", use_container_width=True):
+            st.session_state["compare_report_mode"] = None
+            st.session_state["requested_active_view"] = "🤝 Compare Players"
+            st.rerun()
+
+    report = st.session_state.get("compare_what_changed_output")
+    if report:
+        st.markdown(report)
+    else:
+        st.info("No compare evolution report is available right now. Generate one from the Compare tab first.")
 
 
 def render_compare_debate_page(model) -> None:
@@ -2298,6 +2360,7 @@ def render_compare_tab(primary_player: dict, model=None):
     if st.session_state.get("compare_ai_output_signature") != compare_signature:
         st.session_state.pop("compare_scouting_report_output", None)
         st.session_state.pop("compare_build_around_output", None)
+        st.session_state.pop("compare_what_changed_output", None)
         st.session_state.pop("compare_debate_output", None)
         st.session_state.pop("compare_debate_chat_key", None)
         st.session_state.pop("compare_debate_system_prompt", None)
@@ -2638,6 +2701,33 @@ def render_compare_tab(primary_player: dict, model=None):
                                 st.caption(f"Details: {type(e).__name__}")
                     if st.session_state.get("compare_build_around_output"):
                         st.markdown(st.session_state["compare_build_around_output"])
+                else:
+                    if AI_SETUP_ERROR:
+                        st.info("AI is unavailable in this deployment right now.")
+                        st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                    else:
+                        st.info("Add your OpenAI API key to enable AI analysis.")
+
+            with st.expander("What Changed?", expanded=False):
+                if model:
+                    st.caption("Compare how the selected players evolved across early career, prime, late career, and peak season using full-career context.")
+                    if st.button("Generate Evolution Compare", key="generate_compare_what_changed", use_container_width=True):
+                        prompt = _compare_what_changed_prompt(player_frames)
+                        with st.spinner("Tracing each player's evolution…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.6)
+                                st.session_state["compare_what_changed_output"] = text or "No response."
+                                st.session_state["compare_what_changed_players"] = [item["name"] for item in player_frames]
+                                st.session_state["compare_report_mode"] = "what-changed"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("compare_what_changed_output"):
+                        st.caption("A compare evolution report is already available.")
+                        if st.button("Open What Changed Page", key="open_compare_what_changed_page", use_container_width=True):
+                            st.session_state["compare_report_mode"] = "what-changed"
+                            st.rerun()
                 else:
                     if AI_SETUP_ERROR:
                         st.info("AI is unavailable in this deployment right now.")

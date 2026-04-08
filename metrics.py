@@ -1,6 +1,7 @@
 # nba_app/metrics.py
 import json
 import re
+import unicodedata
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -44,6 +45,11 @@ def _ensure_season_start(df: pd.DataFrame) -> pd.DataFrame:
             df = df.copy()
             df["SEASON_START"] = df["SEASON_ID"].astype(str).str[:4].astype(int)
     return df
+
+
+def _normalize_name_key(name: str) -> str:
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    return "".join(ch for ch in text if not unicodedata.combining(ch)).strip().lower()
 
 
 def _fill_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -784,6 +790,184 @@ def compute_player_percentile_context(player_name: str, season_id: str, adv_df: 
     return out.reset_index(drop=True)
 
 
+def compute_impact_index(player_name: str, adv_df: pd.DataFrame) -> dict:
+    """
+    Build a transparent blended impact score for the selected career window.
+    Uses season-level balldontlie percentiles plus team win rate when available.
+    """
+    if adv_df is None or adv_df.empty:
+        return {}
+
+    component_weights = {
+        "Scoring": 0.25,
+        "Efficiency": 0.20,
+        "Playmaking": 0.18,
+        "Defense": 0.15,
+        "Rebounding": 0.10,
+        "Team Success": 0.12,
+    }
+
+    component_notes = {
+        "Scoring": "Combines scoring volume and role load.",
+        "Efficiency": "Rewards converting possessions efficiently.",
+        "Playmaking": "Captures creation for teammates and offensive orchestration.",
+        "Defense": "Blends steals, blocks, and defensive glass support.",
+        "Rebounding": "Measures possession-ending and possession-extending value.",
+        "Team Success": "Credits impact that is showing up in team winning.",
+    }
+
+    season_breakdowns = []
+    normalized_target = _normalize_name_key(player_name)
+
+    for _, season_row in adv_df.iterrows():
+        season_id = str(season_row.get("SEASON_ID", "") or "")
+        if not season_id:
+            continue
+        try:
+            season_start = int(season_id[:4])
+        except Exception:
+            continue
+
+        league_df = get_balldontlie_league_season_averages(season_start)
+        if league_df is None or league_df.empty:
+            continue
+
+        league_match = league_df[
+            league_df["PLAYER_NAME"].astype(str).apply(_normalize_name_key) == normalized_target
+        ].copy()
+        if league_match.empty:
+            continue
+        league_row = league_match.iloc[0]
+
+        scoring_pct = _metric_percentile_from_row(league_row, league_df, "scoring")
+        efficiency_pct = _metric_percentile_from_row(league_row, league_df, "efficiency")
+        rebounding_pct = _metric_percentile_from_row(league_row, league_df, "rebounding")
+
+        playmaking_parts = [
+            _metric_percentile_from_row(league_row, league_df, "playmaking"),
+        ]
+        if "ast_rank" in league_row.index:
+            ast_series = pd.to_numeric(league_df.get("ast"), errors="coerce")
+            ast_value = pd.to_numeric(league_row.get("ast"), errors="coerce")
+            if pd.notna(ast_value) and ast_series.dropna().size:
+                playmaking_parts.append(round(float((ast_series <= ast_value).mean() * 100.0), 1))
+        playmaking_parts = [x for x in playmaking_parts if x is not None and not pd.isna(x)]
+        playmaking_pct = float(np.mean(playmaking_parts)) if playmaking_parts else None
+
+        defense_parts = [
+            _metric_percentile_from_row(league_row, league_df, "rim_protection"),
+            _metric_percentile_from_row(league_row, league_df, "steals"),
+        ]
+        reb_pct_rank = pd.to_numeric(league_row.get("reb_pct_rank"), errors="coerce")
+        total_players = int(league_df["PLAYER_ID"].nunique()) if "PLAYER_ID" in league_df.columns else int(len(league_df))
+        if pd.notna(reb_pct_rank) and total_players > 1:
+            defense_parts.append(round(((total_players - int(reb_pct_rank)) / max(total_players - 1, 1)) * 100.0, 1))
+        defense_parts = [x for x in defense_parts if x is not None and not pd.isna(x)]
+        defense_pct = float(np.mean(defense_parts)) if defense_parts else None
+
+        team_win_pct = pd.to_numeric(season_row.get("TEAM_WIN_PCT"), errors="coerce")
+        if pd.notna(team_win_pct):
+            team_success_pct = float(team_win_pct) * 100.0 if float(team_win_pct) <= 1.0 else float(team_win_pct)
+        else:
+            team_success_pct = None
+
+        raw_component_scores = {
+            "Scoring": scoring_pct,
+            "Efficiency": efficiency_pct,
+            "Playmaking": playmaking_pct,
+            "Defense": defense_pct,
+            "Rebounding": rebounding_pct,
+            "Team Success": team_success_pct,
+        }
+        available = {k: v for k, v in raw_component_scores.items() if v is not None and not pd.isna(v)}
+        if not available:
+            continue
+
+        active_weight_total = sum(component_weights[k] for k in available)
+        score = 0.0
+        normalized_components = {}
+        for label, value in available.items():
+            norm_weight = component_weights[label] / active_weight_total if active_weight_total else 0.0
+            score += float(value) * norm_weight
+            normalized_components[label] = {
+                "Score": float(value),
+                "Weight": norm_weight,
+                "Why": component_notes[label],
+            }
+
+        gp = pd.to_numeric(season_row.get("GP"), errors="coerce")
+        season_breakdowns.append({
+            "Season": season_id,
+            "GP": float(gp) if pd.notna(gp) else 1.0,
+            "Impact Score": float(score),
+            "Components": normalized_components,
+        })
+
+    if not season_breakdowns:
+        return {}
+
+    gp_weights = np.array([max(item["GP"], 1.0) for item in season_breakdowns], dtype=float)
+    overall_score = float(np.average([item["Impact Score"] for item in season_breakdowns], weights=gp_weights))
+
+    aggregate_components = {}
+    for label in component_weights:
+        vals = []
+        vals_weights = []
+        weights_seen = []
+        for season in season_breakdowns:
+            comp = season["Components"].get(label)
+            if not comp:
+                continue
+            vals.append(comp["Score"])
+            vals_weights.append(max(season["GP"], 1.0))
+            weights_seen.append(comp["Weight"])
+        if vals:
+            aggregate_components[label] = {
+                "Score": float(np.average(vals, weights=vals_weights)),
+                "Weight": float(np.mean(weights_seen)),
+                "Why": component_notes[label],
+            }
+
+    if overall_score >= 90:
+        tier = "Elite MVP-tier impact"
+    elif overall_score >= 82:
+        tier = "Superstar impact"
+    elif overall_score >= 74:
+        tier = "All-NBA caliber impact"
+    elif overall_score >= 66:
+        tier = "High-end winning impact"
+    elif overall_score >= 58:
+        tier = "Strong starter impact"
+    else:
+        tier = "Rotation-level impact profile"
+
+    breakdown_df = pd.DataFrame(
+        [
+            {
+                "Component": label,
+                "Score": round(values["Score"], 1),
+                "Weight": round(values["Weight"] * 100.0, 1),
+                "Why": values["Why"],
+            }
+            for label, values in aggregate_components.items()
+        ]
+    )
+    if not breakdown_df.empty:
+        breakdown_df = breakdown_df.sort_values(["Weight", "Score"], ascending=[False, False]).reset_index(drop=True)
+
+    return {
+        "score": round(overall_score, 1),
+        "tier": tier,
+        "breakdown": breakdown_df,
+        "season_scores": pd.DataFrame(
+            {
+                "Season": [item["Season"] for item in season_breakdowns],
+                "Impact Score": [round(item["Impact Score"], 1) for item in season_breakdowns],
+            }
+        ),
+    }
+
+
 def detect_player_archetype(player_name: str, adv_df: pd.DataFrame, percentile_df: pd.DataFrame | None = None) -> dict:
     """
     Rules-based player typing using latest-season production and percentile context.
@@ -1329,6 +1513,37 @@ _NL_METRIC_DEFS = {
     "ball_security": {"league_col": "ast_to", "rank_col": "ast_to_rank", "label": "AST/TO", "weight": 0.7},
 }
 
+_CUSTOM_FINDER_METRICS = {
+    "PPG": {"kind": "direct", "col": "pts"},
+    "RPG": {"kind": "direct", "col": "reb"},
+    "APG": {"kind": "direct", "col": "ast"},
+    "MIN/G": {"kind": "direct", "col": "min"},
+    "TS%": {"kind": "percent", "col": "ts_pct"},
+    "eFG%": {"kind": "percent", "col": "efg_pct"},
+    "USG%": {"kind": "percent", "col": "usg_pct"},
+    "AST%": {"kind": "percent", "col": "ast_pct"},
+    "TRB%": {"kind": "percent", "col": "reb_pct"},
+    "ORB%": {"kind": "percent", "col": "oreb_pct"},
+    "DRB%": {"kind": "percent", "col": "dreb_pct"},
+    "3P%": {"kind": "percent", "col": "fg3_pct"},
+    "FT%": {"kind": "percent", "col": "ft_pct"},
+    "3PA/G": {"kind": "direct", "col": "fg3a"},
+    "2PA/G": {"kind": "derived", "fn": lambda df: pd.to_numeric(df.get("fga"), errors="coerce") - pd.to_numeric(df.get("fg3a"), errors="coerce")},
+    "BLK/G": {"kind": "direct", "col": "blk"},
+    "STL/G": {"kind": "direct", "col": "stl"},
+    "AST/TO": {"kind": "direct", "col": "ast_to"},
+    "PTS/36": {"kind": "derived", "fn": lambda df: np.where(pd.to_numeric(df.get("min"), errors="coerce") > 0, pd.to_numeric(df.get("pts"), errors="coerce") / pd.to_numeric(df.get("min"), errors="coerce") * 36.0, np.nan)},
+    "REB/36": {"kind": "derived", "fn": lambda df: np.where(pd.to_numeric(df.get("min"), errors="coerce") > 0, pd.to_numeric(df.get("reb"), errors="coerce") / pd.to_numeric(df.get("min"), errors="coerce") * 36.0, np.nan)},
+    "AST/36": {"kind": "derived", "fn": lambda df: np.where(pd.to_numeric(df.get("min"), errors="coerce") > 0, pd.to_numeric(df.get("ast"), errors="coerce") / pd.to_numeric(df.get("min"), errors="coerce") * 36.0, np.nan)},
+}
+
+_CUSTOM_ROLE_OPTIONS = [
+    "Any",
+    "Scorer",
+    "Playmaker",
+    "Defender",
+]
+
 _NL_UNSUPPORTED_HINTS = {
     "young": "age filters",
     "rookie": "age / experience filters",
@@ -1630,6 +1845,257 @@ def _metric_is_eligible(row: pd.Series, metric_key: str) -> bool:
     if metric_key == "ball_security":
         return (pd.notna(ast) and ast >= 3.0) or (pd.notna(ast_pct) and ast_pct >= 0.18)
     return True
+
+
+def _custom_metric_series(df: pd.DataFrame, label: str) -> pd.Series:
+    spec = _CUSTOM_FINDER_METRICS.get(label)
+    if spec is None or df is None or df.empty:
+        return pd.Series(np.nan, index=df.index if isinstance(df, pd.DataFrame) else None)
+    kind = spec.get("kind")
+    if kind == "direct":
+        return pd.to_numeric(df.get(spec["col"]), errors="coerce")
+    if kind == "percent":
+        return pd.to_numeric(df.get(spec["col"]), errors="coerce") * 100.0
+    if kind == "derived":
+        try:
+            return pd.to_numeric(spec["fn"](df), errors="coerce")
+        except Exception:
+            return pd.Series(np.nan, index=df.index)
+    return pd.Series(np.nan, index=df.index)
+
+
+def custom_stat_finder_metric_labels() -> list[str]:
+    return list(_CUSTOM_FINDER_METRICS.keys())
+
+
+def custom_stat_finder_role_labels() -> list[str]:
+    return _CUSTOM_ROLE_OPTIONS
+
+
+def custom_stat_finder_tag_labels() -> list[str]:
+    return [
+        "Any",
+        "High-Usage Engine",
+        "Shot Creator / Isolation Scorer",
+        "Catch-and-Shoot Specialist",
+        "Movement Shooter",
+        "3-and-D Wing",
+        "3-and-D Guard",
+        "Primary Playmaker",
+        "Scoring Playmaker",
+        "Drive-and-Kick Creator",
+        "Slasher",
+        "Point-of-Attack Defender",
+        "Rim Protector",
+        "Stretch Big",
+        "Playmaking Hub (Point Center)",
+        "Unicorn Big",
+    ]
+
+
+def _league_row_to_adv_df(row: pd.Series) -> pd.DataFrame:
+    fga = pd.to_numeric(row.get("fga"), errors="coerce")
+    fta = pd.to_numeric(row.get("fta"), errors="coerce")
+    return pd.DataFrame([{
+        "POSITION": row.get("POSITION"),
+        "GP": pd.to_numeric(row.get("gp"), errors="coerce"),
+        "PPG": pd.to_numeric(row.get("pts"), errors="coerce"),
+        "RPG": pd.to_numeric(row.get("reb"), errors="coerce"),
+        "APG": pd.to_numeric(row.get("ast"), errors="coerce"),
+        "SPG": pd.to_numeric(row.get("stl"), errors="coerce"),
+        "BPG": pd.to_numeric(row.get("blk"), errors="coerce"),
+        "TS%": pd.to_numeric(row.get("ts_pct"), errors="coerce") * 100.0,
+        "EFG%": pd.to_numeric(row.get("efg_pct"), errors="coerce") * 100.0,
+        "USG% (true)": pd.to_numeric(row.get("usg_pct"), errors="coerce") * 100.0,
+        "AST%": pd.to_numeric(row.get("ast_pct"), errors="coerce") * 100.0,
+        "TRB%": pd.to_numeric(row.get("reb_pct"), errors="coerce") * 100.0,
+        "ORB%": pd.to_numeric(row.get("oreb_pct"), errors="coerce") * 100.0,
+        "DRB%": pd.to_numeric(row.get("dreb_pct"), errors="coerce") * 100.0,
+        "3PA/G": pd.to_numeric(row.get("fg3a"), errors="coerce"),
+        "3P%": pd.to_numeric(row.get("fg3_pct"), errors="coerce") * 100.0,
+        "FTr": (float(fta) / float(fga)) if pd.notna(fga) and pd.notna(fta) and float(fga) > 0 else np.nan,
+        "HEIGHT_IN": pd.to_numeric(row.get("HEIGHT_IN"), errors="coerce"),
+        "WEIGHT_LBS": pd.to_numeric(row.get("WEIGHT_LBS"), errors="coerce"),
+    }])
+
+
+def _custom_role_tag_profile(row: pd.Series) -> dict:
+    adv_df = _league_row_to_adv_df(row)
+    archetype = detect_player_archetype(str(row.get("PLAYER_NAME", "")), adv_df, pd.DataFrame())
+    return {
+        "primary": archetype.get("primary"),
+        "secondary": archetype.get("secondary"),
+        "style_tags": archetype.get("style_tags", []) or [],
+        "impact_tags": archetype.get("impact_tags", []) or [],
+    }
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def find_players_by_custom_filters(
+    season: int | None,
+    filters: list[dict],
+    *,
+    position_family: str | None = None,
+    percentile_metric: str | None = None,
+    min_percentile: int | None = None,
+    primary_role: str | None = None,
+    archetype_tag: str | None = None,
+    min_gp: int = 20,
+    min_mpg: float = 15.0,
+    sort_by: str = "PPG",
+    sort_desc: bool = True,
+    limit: int = 25,
+) -> tuple[pd.DataFrame, dict]:
+    if season is None:
+        now = pd.Timestamp.now(tz="America/New_York")
+        season = int(now.year if now.month >= 10 else now.year - 1)
+
+    league_df = get_balldontlie_league_season_averages(int(season))
+    if league_df is None or league_df.empty:
+        return pd.DataFrame(), {"message": "League season data could not be loaded right now."}
+
+    comp = league_df.copy()
+    if "gp" in comp.columns:
+        comp = comp[pd.to_numeric(comp["gp"], errors="coerce") >= int(min_gp)].copy()
+    if "min" in comp.columns:
+        comp = comp[pd.to_numeric(comp["min"], errors="coerce") >= float(min_mpg)].copy()
+
+    if position_family:
+        comp = comp[comp["POSITION"].apply(_position_family) == position_family].copy()
+        if position_family == "big" and "HEIGHT_IN" in comp.columns:
+            comp = comp[pd.to_numeric(comp["HEIGHT_IN"], errors="coerce") >= 80].copy()
+        elif position_family == "guard" and "HEIGHT_IN" in comp.columns:
+            comp = comp[pd.to_numeric(comp["HEIGHT_IN"], errors="coerce") <= 79].copy()
+        elif position_family == "wing" and "HEIGHT_IN" in comp.columns:
+            heights = pd.to_numeric(comp["HEIGHT_IN"], errors="coerce")
+            comp = comp[heights.between(77, 82, inclusive="both")].copy()
+
+    percentile_metric = percentile_metric if percentile_metric in _CUSTOM_FINDER_METRICS else None
+    if percentile_metric and min_percentile is not None:
+        percentile_series = comp.apply(
+            lambda row: _metric_percentile_from_row(
+                row.rename({_CUSTOM_FINDER_METRICS[percentile_metric].get("col", ""): row.get(_CUSTOM_FINDER_METRICS[percentile_metric].get("col", ""))}),
+                comp,
+                {
+                    "PPG": "scoring",
+                    "RPG": "rebounding",
+                    "APG": "playmaking",
+                    "TS%": "efficiency",
+                    "eFG%": "efficiency",
+                    "USG%": "usage",
+                    "AST%": "playmaking",
+                    "TRB%": "rebounding",
+                    "ORB%": "rebounding",
+                    "DRB%": "rebounding",
+                    "3P%": "shooting",
+                    "3PA/G": "three_point_volume",
+                    "BLK/G": "rim_protection",
+                    "STL/G": "steals",
+                    "AST/TO": "ball_security",
+                }.get(percentile_metric, "scoring"),
+            ),
+            axis=1,
+        )
+        comp = comp[percentile_series.fillna(0) >= int(min_percentile)].copy()
+        comp["__percentile_gate"] = percentile_series
+
+    if primary_role or archetype_tag:
+        role_profiles = comp.apply(_custom_role_tag_profile, axis=1)
+        comp["__primary_role"] = role_profiles.apply(lambda p: p.get("primary") or "—")
+        comp["__secondary_role"] = role_profiles.apply(lambda p: p.get("secondary") or "—")
+        comp["__style_tags"] = role_profiles.apply(lambda p: p.get("style_tags") or [])
+        comp["__impact_tags"] = role_profiles.apply(lambda p: p.get("impact_tags") or [])
+        if primary_role and primary_role != "Any":
+            comp = comp[comp["__primary_role"] == primary_role].copy()
+        if archetype_tag and archetype_tag != "Any":
+            comp = comp[
+                comp.apply(
+                    lambda row: archetype_tag in (row.get("__style_tags") or []) or archetype_tag in (row.get("__impact_tags") or []),
+                    axis=1,
+                )
+            ].copy()
+
+    active_filters = [
+        f for f in (filters or [])
+        if f.get("metric") in _CUSTOM_FINDER_METRICS
+        and f.get("op") in {">=", "<="}
+        and f.get("value") not in {None, ""}
+    ]
+    if not active_filters:
+        return pd.DataFrame(), {"message": "Add at least one stat rule to run the custom finder."}
+
+    for filter_spec in active_filters:
+        metric_label = filter_spec["metric"]
+        metric_series = _custom_metric_series(comp, metric_label)
+        threshold = pd.to_numeric(filter_spec.get("value"), errors="coerce")
+        if pd.isna(threshold):
+            continue
+        if filter_spec["op"] == ">=":
+            comp = comp[metric_series >= float(threshold)].copy()
+        else:
+            comp = comp[metric_series <= float(threshold)].copy()
+
+    if comp.empty:
+        return pd.DataFrame(), {
+            "message": "No players cleared those custom stat, percentile, and role filters in the latest-season pool.",
+            "summary": "Custom stat finder using balldontlie latest-season averages.",
+        }
+
+    sort_metric = sort_by if sort_by in _CUSTOM_FINDER_METRICS else active_filters[0]["metric"]
+    comp = comp.copy()
+    comp["__sort_metric"] = _custom_metric_series(comp, sort_metric)
+    comp = comp.sort_values("__sort_metric", ascending=not bool(sort_desc), na_position="last").head(limit).copy()
+
+    out = pd.DataFrame({
+        "Player": comp["PLAYER_NAME"],
+        "Position": comp["POSITION"],
+        "Primary Role": comp["__primary_role"] if "__primary_role" in comp.columns else pd.Series("—", index=comp.index),
+        "PPG": _custom_metric_series(comp, "PPG").round(1),
+        "RPG": _custom_metric_series(comp, "RPG").round(1),
+        "APG": _custom_metric_series(comp, "APG").round(1),
+        "TS%": _custom_metric_series(comp, "TS%").round(1),
+        "Player Token": comp["PLAYER_ID"].apply(lambda x: f"balldontlie:{int(x)}" if pd.notna(x) else None),
+    })
+
+    for filter_spec in active_filters[:3]:
+        metric_label = filter_spec["metric"]
+        out[metric_label] = _custom_metric_series(comp, metric_label).round(1)
+    if percentile_metric and "__percentile_gate" in comp.columns:
+        out[f"{percentile_metric} Percentile"] = pd.to_numeric(comp["__percentile_gate"], errors="coerce").round(1)
+
+    ordered_cols = ["Player", "Position", "Primary Role"]
+    seen = set(ordered_cols)
+    for metric_label in [f["metric"] for f in active_filters[:3]] + ["PPG", "RPG", "APG", "TS%"]:
+        if metric_label not in seen and metric_label in out.columns:
+            ordered_cols.append(metric_label)
+            seen.add(metric_label)
+    percentile_col = f"{percentile_metric} Percentile" if percentile_metric else None
+    if percentile_col and percentile_col in out.columns and percentile_col not in seen:
+        ordered_cols.append(percentile_col)
+        seen.add(percentile_col)
+    ordered_cols.append("Player Token")
+    out = out[[c for c in ordered_cols if c in out.columns]]
+
+    filter_summary = ", ".join(f"{f['metric']} {f['op']} {f['value']}" for f in active_filters)
+    extra_filters = []
+    if percentile_metric and min_percentile is not None:
+        extra_filters.append(f"{percentile_metric} percentile >= {int(min_percentile)}")
+    if primary_role and primary_role != "Any":
+        extra_filters.append(f"Primary role = {primary_role}")
+    if archetype_tag and archetype_tag != "Any":
+        extra_filters.append(f"Tag = {archetype_tag}")
+    if extra_filters:
+        filter_summary = ", ".join([filter_summary] + extra_filters) if filter_summary else ", ".join(extra_filters)
+    meta = {
+        "message": "",
+        "summary": "Custom stat finder using balldontlie latest-season averages.",
+        "filter_summary": filter_summary,
+        "position_family": position_family,
+        "season": season,
+        "count": int(len(out)),
+        "sort_by": sort_metric,
+    }
+    return out.reset_index(drop=True), meta
 
 
 @st.cache_data(ttl=1800, show_spinner=False)

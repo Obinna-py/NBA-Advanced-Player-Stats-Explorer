@@ -5,11 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import html
+import unicodedata
 from datetime import datetime
 from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
-from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_balldontlie_league_season_averages, get_balldontlie_player_contracts, get_balldontlie_player_contract_aggregates, get_team_record_for_season
-from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players
+from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_balldontlie_league_season_averages, get_balldontlie_player_contracts, get_balldontlie_player_contract_aggregates, get_team_record_for_season, get_balldontlie_player_game_logs
+from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players, compute_impact_index
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
 from ui_compare import render_html_table, _make_readable_stats_table, STAT_TOOLTIPS, _label_with_tooltip, render_stat_text, _inject_sticky_ai_rail_css
@@ -48,6 +49,29 @@ def _contract_snapshot(contract_df: pd.DataFrame, aggregate_df: pd.DataFrame) ->
         "contract_status": latest_agg.get("contract_status"),
         "contract_type": latest_agg.get("contract_type"),
     }
+
+
+def _render_contract_snapshot_section(contract_snapshot: dict) -> None:
+    st.markdown("### 💸 Contract Snapshot")
+    years = pd.to_numeric(contract_snapshot.get("contract_years"), errors="coerce")
+    _render_hover_stat_cards(
+        [
+            ("Cap Hit", _fmt_money(contract_snapshot.get("cap_hit"))),
+            ("Avg Salary", _fmt_money(contract_snapshot.get("average_salary"))),
+            ("Contract Years", str(int(years)) if pd.notna(years) else "—"),
+            ("Guaranteed", _fmt_money(contract_snapshot.get("total_guaranteed"))),
+        ],
+        columns_per_row=2,
+    )
+    contract_caption = []
+    if contract_snapshot.get("season"):
+        contract_caption.append(f"Season: {contract_snapshot.get('season')}")
+    if contract_snapshot.get("contract_type"):
+        contract_caption.append(f"Type: {contract_snapshot.get('contract_type')}")
+    if contract_snapshot.get("contract_status"):
+        contract_caption.append(f"Status: {contract_snapshot.get('contract_status')}")
+    if contract_caption:
+        render_stat_text(" • ".join(contract_caption), small=True)
 
 
 def _add_team_record_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -456,16 +480,16 @@ def render_player_contract_value_page() -> None:
 
     top_left, top_right = st.columns([4.5, 1.2])
     with top_right:
-        if st.button("Back to Stats", key="back_to_stats_from_contract_value", use_container_width=True):
+        if st.button("Back to Value & Props", key="back_to_stats_from_contract_value", use_container_width=True):
             st.session_state["player_report_mode"] = None
-            st.session_state["requested_active_view"] = "📊 Stats"
+            st.session_state["requested_active_view"] = "💸 Value & Props"
             st.rerun()
 
     report = st.session_state.get("player_contract_value_output")
     if report:
         st.markdown(report)
     else:
-        st.info("No contract value analysis is available right now. Generate one from the player's Stats page first.")
+        st.info("No contract value analysis is available right now. Generate one from the player's Value & Props page first.")
 
 
 def render_player_ai_chat_page(model) -> None:
@@ -684,7 +708,59 @@ def _position_family_label(position: str) -> str:
     return "Other"
 
 
-def _render_hover_stat_cards(cards: list[tuple[str, str]]) -> None:
+def _normalize_name_key(name: str) -> str:
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    return "".join(ch for ch in text if not unicodedata.combining(ch)).strip().lower()
+
+
+def _cluster_archetype_label(row: pd.Series) -> str:
+    family = _position_family_label(row.get("POSITION"))
+    ppg = pd.to_numeric(row.get("PPG"), errors="coerce")
+    rpg = pd.to_numeric(row.get("RPG"), errors="coerce")
+    apg = pd.to_numeric(row.get("APG"), errors="coerce")
+    spg = pd.to_numeric(row.get("STL"), errors="coerce")
+    bpg = pd.to_numeric(row.get("BLK"), errors="coerce")
+    three_pa = pd.to_numeric(row.get("3PA"), errors="coerce")
+    three_pct = pd.to_numeric(row.get("3P%"), errors="coerce")
+    usg = pd.to_numeric(row.get("USG"), errors="coerce")
+    ast_pct = pd.to_numeric(row.get("AST_PCT"), errors="coerce")
+    reb_pct = pd.to_numeric(row.get("REB_PCT"), errors="coerce")
+    ftr = pd.to_numeric(row.get("FTr"), errors="coerce")
+
+    is_big = family == "Big"
+    is_guard = family == "Guard"
+    is_wing = family == "Wing"
+
+    if is_big and pd.notna(ast_pct) and ast_pct >= 24 and pd.notna(apg) and apg >= 5:
+        return "Playmaking Big"
+    if is_big and ((pd.notna(bpg) and bpg >= 1.8) or (pd.notna(reb_pct) and reb_pct >= 16 and pd.notna(bpg) and bpg >= 1.2)):
+        return "Rim-Protecting Big"
+    if is_big and pd.notna(three_pa) and three_pa >= 4 and pd.notna(three_pct) and three_pct >= 34:
+        return "Stretch Big"
+    if is_big and pd.notna(rpg) and rpg >= 9 and pd.notna(ppg) and ppg >= 16:
+        return "Interior Big"
+    if (is_guard or is_wing) and pd.notna(usg) and usg >= 29 and pd.notna(ast_pct) and ast_pct >= 24:
+        return "Offensive Engine"
+    if (is_guard or is_wing) and pd.notna(ppg) and ppg >= 22 and pd.notna(usg) and usg >= 27:
+        return "Shot Creator"
+    if (is_guard or is_wing) and pd.notna(three_pa) and three_pa >= 6 and pd.notna(three_pct) and three_pct >= 37 and pd.notna(usg) and usg <= 24:
+        return "Movement Shooter"
+    if is_wing and pd.notna(three_pa) and three_pa >= 4 and pd.notna(three_pct) and three_pct >= 35 and ((pd.notna(spg) and spg >= 1.0) or (pd.notna(bpg) and bpg >= 0.8)):
+        return "3-and-D Wing"
+    if (is_guard or is_wing) and pd.notna(ftr) and ftr >= 0.28 and pd.notna(ppg) and ppg >= 18:
+        return "Slashing Creator"
+    if (is_guard or is_wing) and pd.notna(apg) and apg >= 5 and pd.notna(ast_pct) and ast_pct >= 20:
+        return "Secondary Creator"
+    if is_big:
+        return "Balanced Big"
+    if is_wing:
+        return "Balanced Wing"
+    if is_guard:
+        return "Balanced Guard"
+    return "Utility Role"
+
+
+def _render_hover_stat_cards(cards: list[tuple[str, str]], columns_per_row: int | None = None) -> None:
     if not cards:
         return
 
@@ -706,9 +782,15 @@ def _render_hover_stat_cards(cards: list[tuple[str, str]]) -> None:
         }
         .hover-stat-value {
           color: #f9fafb;
-          font-size: 2rem;
+          font-size: clamp(1.3rem, 2vw, 2rem);
           font-weight: 700;
           line-height: 1.1;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .hover-stat-value.compact {
+          font-size: clamp(1.05rem, 1.5vw, 1.45rem);
+          line-height: 1.2;
         }
         .hover-stat-label .stat-tooltip {
           cursor: help;
@@ -719,19 +801,280 @@ def _render_hover_stat_cards(cards: list[tuple[str, str]]) -> None:
         """,
         unsafe_allow_html=True,
     )
-    cols = st.columns(len(cards))
-    for col, (label, value) in zip(cols, cards):
+    per_row = max(1, columns_per_row or len(cards))
+    for start in range(0, len(cards), per_row):
+        row_cards = cards[start:start + per_row]
+        cols = st.columns(len(row_cards))
+        for col, (label, value) in zip(cols, row_cards):
+            value_text = "" if value is None else str(value)
+            compact_class = " compact" if len(value_text) >= 10 else ""
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="hover-stat-card">
+                      <div class="hover-stat-label">{_label_with_tooltip(label)}</div>
+                      <div class="hover-stat-value{compact_class}">{html.escape(value_text)}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_impact_summary_cards(score: float, strongest_driver: str, strongest_value: float | None, tier: str) -> None:
+    st.markdown(
+        """
+        <style>
+        .impact-summary-card {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 14px;
+          padding: 14px 16px;
+          min-height: 118px;
+        }
+        .impact-summary-label {
+          color: rgba(255,255,255,0.72);
+          font-size: 0.84rem;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .impact-summary-value {
+          color: #f9fafb;
+          font-size: 2rem;
+          font-weight: 700;
+          line-height: 1.08;
+          word-break: break-word;
+        }
+        .impact-summary-value.is-tier {
+          font-size: 1.08rem;
+          line-height: 1.28;
+          font-weight: 650;
+          white-space: normal;
+        }
+        .impact-summary-delta {
+          margin-top: 8px;
+          color: #86efac;
+          font-size: 0.82rem;
+          font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(3)
+    items = [
+        ("Impact Index", f"{score:.1f}", None, False),
+        (
+            "Strongest Driver",
+            strongest_driver or "—",
+            f"{strongest_value:.1f}" if strongest_value is not None and pd.notna(strongest_value) else None,
+            False,
+        ),
+        ("Tier", tier or "—", None, True),
+    ]
+    for col, (label, value, delta, is_tier) in zip(cols, items):
         with col:
+            tier_class = " is-tier" if is_tier else ""
+            delta_html = f'<div class="impact-summary-delta">↑ {html.escape(delta)}</div>' if delta else ""
             st.markdown(
                 f"""
-                <div class="hover-stat-card">
-                  <div class="hover-stat-label">{_label_with_tooltip(label)}</div>
-                  <div class="hover-stat-value">{html.escape(value)}</div>
+                <div class="impact-summary-card">
+                  <div class="impact-summary-label">{html.escape(label)}</div>
+                  <div class="impact-summary-value{tier_class}">{html.escape(value)}</div>
+                  {delta_html}
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
+
+_PROP_METRIC_MAP = {
+    "Points": "PTS",
+    "Rebounds": "REB",
+    "Assists": "AST",
+    "3PM": "FG3M",
+    "Blocks": "BLK",
+    "Steals": "STL",
+    "PRA": "PRA",
+}
+
+
+def _prop_thresholds(metric_label: str, season_avg: float | None) -> list[float]:
+    defaults = {
+        "Points": [15, 20, 25, 30, 35],
+        "Rebounds": [5, 8, 10, 12, 15],
+        "Assists": [4, 6, 8, 10, 12],
+        "3PM": [1, 2, 3, 4, 5],
+        "Blocks": [1, 2, 3, 4],
+        "Steals": [1, 2, 3, 4],
+        "PRA": [20, 25, 30, 35, 40, 45],
+    }
+    base = defaults.get(metric_label, [10, 15, 20])
+    if season_avg is None or pd.isna(season_avg):
+        return base
+    near = round(float(season_avg) / 5.0) * 5.0 if metric_label in {"Points", "PRA"} else round(float(season_avg))
+    if near > 0 and near not in base:
+        base.append(near)
+    return sorted(set(base))
+
+
+def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
+    if not latest_season_id:
+        return
+
+    logs = get_balldontlie_player_game_logs(
+        player["id"],
+        [latest_season_id],
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+        season_type="Regular Season",
+    )
+    if logs is None or logs.empty:
+        st.markdown("### 🎯 Prop Research")
+        st.info("Recent player game logs were not available from balldontlie for this season yet.")
+        return
+
+    logs = logs.copy()
+    for col in ["PTS", "REB", "AST", "FG3M", "BLK", "STL", "MIN"]:
+        if col in logs.columns:
+            logs[col] = pd.to_numeric(logs[col], errors="coerce")
+    logs["PRA"] = logs[["PTS", "REB", "AST"]].sum(axis=1, min_count=3)
+    if "GAME_DATE" in logs.columns:
+        logs["GAME_DATE"] = pd.to_datetime(logs["GAME_DATE"], errors="coerce")
+        logs = logs.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+
+    st.markdown("### 🎯 Prop Research")
+    render_stat_text("A research-first prop context view from latest-season balldontlie game logs. Use this to study trend, hit rates, consistency, and volatility before making any call.", small=True)
+
+    metric_label = st.selectbox(
+        "Prop stat",
+        list(_PROP_METRIC_MAP.keys()),
+        index=0,
+        key=f"prop_metric_{player.get('id')}",
+    )
+    stat_col = _PROP_METRIC_MAP[metric_label]
+    stat_series = pd.to_numeric(logs.get(stat_col), errors="coerce")
+    valid = stat_series.dropna()
+    if valid.empty:
+        st.info("That prop stat is not available in the returned game logs.")
+        return
+
+    season_avg = float(valid.mean())
+    last5_avg = float(valid.head(5).mean()) if len(valid) >= 1 else np.nan
+    last10_avg = float(valid.head(10).mean()) if len(valid) >= 1 else np.nan
+    season_high = float(valid.max())
+    season_low = float(valid.min())
+    std_dev = float(valid.std(ddof=0)) if len(valid) > 1 else 0.0
+    cv = (std_dev / season_avg) if season_avg and season_avg > 0 else np.nan
+    volatility_score = min(max((cv or 0.0) * 100.0, 0.0), 100.0) if pd.notna(cv) else np.nan
+    consistency_score = 100.0 - volatility_score if pd.notna(volatility_score) else np.nan
+
+    summary_cols = st.columns(5)
+    summary_values = [
+        ("Season Avg", season_avg),
+        ("Last 5 Avg", last5_avg),
+        ("Last 10 Avg", last10_avg),
+        ("Season High", season_high),
+        ("Season Low", season_low),
+    ]
+    for col, (label, value) in zip(summary_cols, summary_values):
+        with col:
+            st.metric(label, f"{value:.1f}" if pd.notna(value) else "—")
+
+    context_cols = st.columns(2)
+    with context_cols[0]:
+        st.metric("Consistency Score", f"{consistency_score:.1f}" if pd.notna(consistency_score) else "—")
+        render_stat_text("Higher is steadier. This is based on how tight the game-to-game distribution is around the season average.", small=True)
+    with context_cols[1]:
+        st.metric("Volatility Score", f"{volatility_score:.1f}" if pd.notna(volatility_score) else "—")
+        render_stat_text("Higher means wider game-to-game swings, which usually means more risk on a prop line.", small=True)
+
+    thresholds = _prop_thresholds(metric_label, season_avg)
+    st.markdown("#### Over / Under Hit Rates")
+    line_choices = sorted({float(x) for x in thresholds} | {round(float(season_avg), 1)}) if pd.notna(season_avg) else [float(x) for x in thresholds]
+    default_line = round(float(season_avg), 1) if pd.notna(season_avg) else float(line_choices[0])
+    line_col, custom_line_col = st.columns([1.3, 1])
+    with line_col:
+        selected_line = st.selectbox(
+            "Quick line",
+            line_choices,
+            index=min(range(len(line_choices)), key=lambda i: abs(line_choices[i] - default_line)),
+            key=f"prop_quick_line_{player.get('id')}_{metric_label}",
+            format_func=lambda x: f"{x:.1f}",
+        )
+    with custom_line_col:
+        prop_line = st.number_input(
+            "Or set a custom line",
+            min_value=0.0,
+            value=float(selected_line),
+            step=0.5,
+            key=f"prop_custom_line_{player.get('id')}_{metric_label}",
+        )
+
+    recent_5 = valid.head(5)
+    recent_10 = valid.head(10)
+
+    def _rate(series: pd.Series, mode: str) -> float:
+        if len(series) == 0:
+            return np.nan
+        if mode == "over":
+            return float((series > prop_line).mean() * 100.0)
+        if mode == "under":
+            return float((series < prop_line).mean() * 100.0)
+        return float((series == prop_line).mean() * 100.0)
+
+    ou_cols = st.columns(5)
+    over_season = _rate(valid, "over")
+    over_recent = _rate(recent_10, "over")
+    under_season = _rate(valid, "under")
+    under_recent = _rate(recent_10, "under")
+    push_season = _rate(valid, "push")
+    ou_values = [
+        (f"Season Over {prop_line:.1f}", over_season),
+        (f"Last 10 Over {prop_line:.1f}", over_recent),
+        (f"Season Under {prop_line:.1f}", under_season),
+        (f"Last 10 Under {prop_line:.1f}", under_recent),
+        ("Season Push", push_season),
+    ]
+    for col, (label, value) in zip(ou_cols, ou_values):
+        with col:
+            st.metric(label, f"{value:.1f}%" if pd.notna(value) else "—")
+
+    render_stat_text(
+        "Over is counted when the player clears the line, under when they finish below it, and push when they land exactly on it.",
+        small=True,
+    )
+
+    st.markdown("#### Common Threshold Hit Rates")
+    hit_rows = []
+    for threshold in thresholds:
+        season_hit = float((valid >= threshold).mean() * 100.0) if len(valid) else np.nan
+        recent_hit = float((recent_10 >= threshold).mean() * 100.0) if len(recent_10) else np.nan
+        recent5_hit = float((recent_5 >= threshold).mean() * 100.0) if len(recent_5) else np.nan
+        hit_rows.append({
+            "Line": f"{threshold}+",
+            "Season Hit Rate": season_hit,
+            "Last 10 Hit Rate": recent_hit,
+            "Last 5 Hit Rate": recent5_hit,
+        })
+    hit_df = pd.DataFrame(hit_rows)
+    render_html_table(hit_df, number_cols=[], percent_cols=["Season Hit Rate", "Last 10 Hit Rate", "Last 5 Hit Rate"], max_height_px=260)
+
+    chart_df = logs.copy()
+    chart_df["Value"] = pd.to_numeric(chart_df.get(stat_col), errors="coerce")
+    chart_df = chart_df.dropna(subset=["Value"])
+    if not chart_df.empty:
+        chart_df = chart_df.sort_values("GAME_DATE")
+        chart_df["5-Game Avg"] = chart_df["Value"].rolling(5, min_periods=1).mean()
+        fig = px.line(
+            chart_df,
+            x="GAME_DATE",
+            y=["Value", "5-Game Avg"],
+            title=f"{metric_label} Trend",
+            labels={"GAME_DATE": "Game Date", "value": metric_label, "variable": "Series"},
+        )
+        fig.add_hline(y=season_avg, line_dash="dash", line_color="rgba(255,255,255,0.5)", annotation_text="Season average")
+        fig.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
 
 def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, percentile_df: pd.DataFrame) -> None:
     if adv is None or adv.empty:
@@ -863,6 +1206,85 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                     name=player_name,
                 ))
             fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+        cluster = league_df.copy()
+        cluster["PPG"] = pd.to_numeric(cluster.get("pts"), errors="coerce")
+        cluster["RPG"] = pd.to_numeric(cluster.get("reb"), errors="coerce")
+        cluster["APG"] = pd.to_numeric(cluster.get("ast"), errors="coerce")
+        cluster["STL"] = pd.to_numeric(cluster.get("stl"), errors="coerce")
+        cluster["BLK"] = pd.to_numeric(cluster.get("blk"), errors="coerce")
+        cluster["3PA"] = pd.to_numeric(cluster.get("fg3a"), errors="coerce")
+        cluster["3P%"] = pd.to_numeric(cluster.get("fg3_pct"), errors="coerce") * 100.0
+        cluster["USG"] = pd.to_numeric(cluster.get("usg_pct"), errors="coerce") * 100.0
+        cluster["AST_PCT"] = pd.to_numeric(cluster.get("ast_pct"), errors="coerce") * 100.0
+        cluster["REB_PCT"] = pd.to_numeric(cluster.get("reb_pct"), errors="coerce") * 100.0
+        cluster["TS"] = pd.to_numeric(cluster.get("ts_pct"), errors="coerce") * 100.0
+        cluster["GP"] = pd.to_numeric(cluster.get("gp"), errors="coerce")
+        cluster["MIN"] = pd.to_numeric(cluster.get("min"), errors="coerce")
+        cluster["FGA"] = pd.to_numeric(cluster.get("fga"), errors="coerce")
+        cluster["FTA"] = pd.to_numeric(cluster.get("fta"), errors="coerce")
+        cluster["FTr"] = np.where(cluster["FGA"] > 0, cluster["FTA"] / cluster["FGA"], np.nan)
+        cluster["Position Family"] = cluster["POSITION"].apply(_position_family_label)
+        cluster = cluster.dropna(subset=["PPG", "RPG", "APG", "USG", "AST_PCT", "REB_PCT"])
+        cluster = cluster[(cluster["GP"] >= 12) & (cluster["MIN"] >= 14) & (cluster["PPG"] >= 6)].copy()
+
+        if not cluster.empty:
+            cluster["Creation Load"] = (cluster["USG"] * 0.62) + (cluster["AST_PCT"] * 0.38)
+            cluster["Interior Impact"] = (
+                cluster["REB_PCT"] * 1.1
+                + cluster["BLK"].fillna(0) * 10.0
+                + np.where(cluster["Position Family"] == "Big", 7.0, 0.0)
+                - cluster["3PA"].fillna(0) * 0.8
+            )
+            cluster["Cluster"] = cluster.apply(_cluster_archetype_label, axis=1)
+            cluster["__name_key"] = cluster["PLAYER_NAME"].apply(_normalize_name_key)
+            selected_key = _normalize_name_key(player_name)
+            player_cluster_row = cluster[cluster["__name_key"] == selected_key].copy()
+
+            st.markdown("#### 🧬 Archetype Cluster Map")
+            st.caption("See where this player sits among league archetypes by creation load and interior impact. Color groups are stat-profile clusters from the latest balldontlie season pool.")
+
+            fig = px.scatter(
+                cluster,
+                x="Creation Load",
+                y="Interior Impact",
+                size="PPG",
+                color="Cluster",
+                hover_name="PLAYER_NAME",
+                hover_data={
+                    "Position Family": True,
+                    "PPG": ":.1f",
+                    "RPG": ":.1f",
+                    "APG": ":.1f",
+                    "TS": ":.1f",
+                    "Creation Load": ":.1f",
+                    "Interior Impact": ":.1f",
+                },
+                title="Latest-Season Archetype Clusters",
+                labels={"Creation Load": "Creation Load", "Interior Impact": "Interior Impact"},
+                opacity=0.58,
+            )
+            if not player_cluster_row.empty:
+                fig.add_trace(go.Scatter(
+                    x=player_cluster_row["Creation Load"],
+                    y=player_cluster_row["Interior Impact"],
+                    mode="markers+text",
+                    text=[player_name],
+                    textposition="top center",
+                    marker=dict(size=20, color="#f59e0b", line=dict(color="white", width=1.6), symbol="star"),
+                    name=player_name,
+                ))
+                cluster_name = player_cluster_row.iloc[0].get("Cluster") or "—"
+                peers = (
+                    cluster[cluster["Cluster"] == cluster_name]
+                    .sort_values("PPG", ascending=False)["PLAYER_NAME"]
+                    .head(6)
+                    .tolist()
+                )
+                if peers:
+                    st.caption(f"Current cluster: **{cluster_name}**. Nearby archetype examples: {', '.join(peers)}.")
+            fig.update_layout(height=480, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
             st.plotly_chart(fig, use_container_width=True)
 
 def validate_phase_output(phases: dict, seasons_available: list[str]) -> dict:
@@ -1169,28 +1591,6 @@ def stats_tab(player, model):
                 ("APG", f"{apg_val:.1f}" if pd.notna(apg_val) else "—"),
                 ("TS%", f"{ts_num:.1f}%" if pd.notna(ts_num) else "—"),
             ])
-        if contract_df is not None and not contract_df.empty:
-            st.markdown("### 💸 Contract Snapshot")
-            snap_cols = st.columns(4)
-            with snap_cols[0]:
-                st.metric("Cap Hit", _fmt_money(contract_snapshot.get("cap_hit")))
-            with snap_cols[1]:
-                st.metric("Avg Salary", _fmt_money(contract_snapshot.get("average_salary")))
-            with snap_cols[2]:
-                years = pd.to_numeric(contract_snapshot.get("contract_years"), errors="coerce")
-                st.metric("Contract Years", str(int(years)) if pd.notna(years) else "—")
-            with snap_cols[3]:
-                st.metric("Guaranteed", _fmt_money(contract_snapshot.get("total_guaranteed")))
-            contract_caption = []
-            if contract_snapshot.get("season"):
-                contract_caption.append(f"Season: {contract_snapshot.get('season')}")
-            if contract_snapshot.get("contract_type"):
-                contract_caption.append(f"Type: {contract_snapshot.get('contract_type')}")
-            if contract_snapshot.get("contract_status"):
-                contract_caption.append(f"Status: {contract_snapshot.get('contract_status')}")
-            if contract_caption:
-                render_stat_text(" • ".join(contract_caption), small=True)
-
     if "show_player_ai_rail" not in st.session_state:
         st.session_state["show_player_ai_rail"] = True
     rail_toggle_col_left, rail_toggle_col_right = st.columns([4.5, 1.2])
@@ -1224,6 +1624,42 @@ def stats_tab(player, model):
             )
 
             latest_season_id = str(display_adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in display_adv.columns else ""
+            impact_index = compute_impact_index(player["full_name"], display_adv)
+            if impact_index:
+                st.markdown("### 🧠 Impact Index")
+                render_stat_text("A blended score of scoring, efficiency, playmaking, defense, rebounding, and team winning for the selected career window.", small=True)
+                breakdown_df = impact_index.get("breakdown", pd.DataFrame())
+                if not breakdown_df.empty:
+                    top_component = breakdown_df.sort_values("Score", ascending=False).iloc[0]
+                    strongest_driver = str(top_component["Component"])
+                    strongest_value = pd.to_numeric(top_component["Score"], errors="coerce")
+                else:
+                    strongest_driver = "—"
+                    strongest_value = None
+                _render_impact_summary_cards(
+                    impact_index["score"],
+                    strongest_driver,
+                    strongest_value,
+                    impact_index.get("tier", "—"),
+                )
+                if not breakdown_df.empty:
+                    render_html_table(
+                        breakdown_df[["Component", "Score", "Weight", "Why"]],
+                        number_cols=["Score", "Weight"],
+                        max_height_px=320,
+                    )
+                season_scores = impact_index.get("season_scores", pd.DataFrame())
+                if season_scores is not None and len(season_scores) >= 2:
+                    fig = px.line(
+                        season_scores,
+                        x="Season",
+                        y="Impact Score",
+                        markers=True,
+                        title="Impact Index Across the Selected Window",
+                    )
+                    fig.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+                    st.plotly_chart(fig, use_container_width=True)
+
             percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, display_adv)
             _render_player_storytelling_dashboard(player["full_name"], display_adv, percentile_df)
             if not percentile_df.empty:
@@ -1610,68 +2046,6 @@ def stats_tab(player, model):
                     else:
                         st.info("Add your OpenAI API key to enable AI analysis.")
 
-            with st.expander("Contract Value Analyzer", expanded=False):
-                contract_df = get_balldontlie_player_contracts(
-                    player["id"],
-                    player_name=player.get("full_name"),
-                    player_source=player.get("source"),
-                )
-                contract_agg_df = get_balldontlie_player_contract_aggregates(
-                    player["id"],
-                    player_name=player.get("full_name"),
-                    player_source=player.get("source"),
-                )
-                if model and contract_df is not None and not contract_df.empty:
-                    birthdate = get_player_birthdate(
-                        player["id"],
-                        player_name=player.get("full_name"),
-                        player_source=player.get("source"),
-                    )
-                    age_value = _age_from_birthdate(birthdate) if birthdate else None
-                    snapshot = _contract_snapshot(contract_df, contract_agg_df)
-                    contract_summary = (
-                        f"Cap Hit: {_fmt_money(snapshot.get('cap_hit'))} • "
-                        f"Avg Salary: {_fmt_money(snapshot.get('average_salary'))} • "
-                        f"Years: {int(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) if pd.notna(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) else '—'}"
-                    )
-                    st.caption("Generate a dedicated page judging whether the player's contract looks overpaid, fair, or underpaid.")
-                    if st.button("Generate Contract Value Analysis", key="generate_player_contract_value", use_container_width=True):
-                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
-                        adv_for_summary = full_adv if full_adv is not None and not full_adv.empty else adv
-                        prompt = _player_contract_value_prompt(
-                            player["full_name"],
-                            pergame_for_summary,
-                            adv_for_summary,
-                            contract_df,
-                            contract_agg_df,
-                            age_value,
-                        )
-                        with st.spinner("Analyzing contract value…"):
-                            try:
-                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.6)
-                                st.session_state["player_contract_value_output"] = text or "No response."
-                                st.session_state["player_contract_value_player_name"] = player["full_name"]
-                                st.session_state["player_contract_value_summary"] = contract_summary
-                                st.session_state["player_report_mode"] = "contract-value"
-                                st.rerun()
-                            except Exception as e:
-                                st.warning(_friendly_ai_error_message(e))
-                                st.caption(f"Details: {type(e).__name__}")
-                    if st.session_state.get("player_contract_value_output"):
-                        st.caption("A contract value analysis is already available.")
-                        if st.button("Open Contract Value Page", key="open_player_contract_value_page", use_container_width=True):
-                            st.session_state["player_report_mode"] = "contract-value"
-                            st.rerun()
-                else:
-                    if not model:
-                        if AI_SETUP_ERROR:
-                            st.info("AI is unavailable in this deployment right now.")
-                            st.caption(f"Setup details: {AI_SETUP_ERROR}")
-                        else:
-                            st.info("Add your OpenAI API key to enable AI analysis.")
-                    else:
-                        st.info("Contract data is unavailable for this player right now.")
-
             with st.expander("Ask the AI Assistant", expanded=True):
                 if model:
                     chat_store = st.session_state.setdefault("player_ai_conversations", {})
@@ -1710,3 +2084,162 @@ def stats_tab(player, model):
                         st.caption(f"Setup details: {AI_SETUP_ERROR}")
                     else:
                         st.info("Add your OpenAI API key to enable AI analysis.")
+
+
+def value_tab(player, model):
+    st.subheader("Value & Props")
+
+    raw_pergame = get_player_career(
+        player["id"],
+        per_mode="PerGame",
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+        all_seasons=True,
+    )
+    raw_totals = get_player_career(
+        player["id"],
+        per_mode="Totals",
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+        all_seasons=True,
+    )
+    if (raw_pergame is None or raw_pergame.empty) and (raw_totals is None or raw_totals.empty):
+        st.info("No player data is available right now.")
+        return
+
+    if raw_totals is not None and not raw_totals.empty:
+        if raw_totals.attrs.get("provider") == "balldontlie":
+            adv = raw_totals.copy()
+        else:
+            adv = compute_full_advanced_stats(raw_totals)
+    else:
+        adv = pd.DataFrame()
+
+    adv = add_per_game_columns(adv, raw_pergame)
+    adv = _add_team_record_column(adv)
+
+    contract_df = get_balldontlie_player_contracts(
+        player["id"],
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+    )
+    contract_agg_df = get_balldontlie_player_contract_aggregates(
+        player["id"],
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+    )
+    contract_snapshot = _contract_snapshot(contract_df, contract_agg_df)
+    headshot_url = get_nba_headshot_url(
+        player["id"],
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+    )
+
+    latest = adv.iloc[-1] if adv is not None and not adv.empty else (raw_pergame.iloc[-1] if raw_pergame is not None and not raw_pergame.empty else pd.Series(dtype=object))
+    hero_col, stats_col = st.columns([1, 3])
+    with hero_col:
+        _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
+        st.caption(player.get("full_name", ""))
+    with stats_col:
+        render_stat_text("Contract context, value analysis, and prop research in one focused workspace.", small=True)
+        latest_team_record = latest.get("TEAM_RECORD")
+        if pd.notna(latest_team_record) and latest_team_record:
+            render_stat_text(f"Current team record: {latest_team_record}", small=True)
+        age_value = _current_age_for_player(
+            player["id"],
+            player_name=player.get("full_name"),
+            player_source=player.get("source"),
+        )
+        cards = [
+            ("Age", str(age_value) if age_value is not None else "—"),
+            ("Cap Hit", _fmt_money(contract_snapshot.get("cap_hit"))),
+            ("Avg Salary", _fmt_money(contract_snapshot.get("average_salary"))),
+            ("Guaranteed", _fmt_money(contract_snapshot.get("total_guaranteed"))),
+        ]
+        _render_hover_stat_cards(cards)
+
+    if "show_value_ai_rail" not in st.session_state:
+        st.session_state["show_value_ai_rail"] = True
+    rail_toggle_col_left, rail_toggle_col_right = st.columns([4.5, 1.2])
+    with rail_toggle_col_right:
+        if st.button(
+            "Hide AI sidebar" if st.session_state["show_value_ai_rail"] else "Show AI sidebar",
+            key="toggle_value_ai_rail",
+            use_container_width=True,
+        ):
+            st.session_state["show_value_ai_rail"] = not st.session_state["show_value_ai_rail"]
+            st.rerun()
+
+    if st.session_state["show_value_ai_rail"]:
+        _inject_sticky_ai_rail_css("sticky-value-ai-rail")
+        main_col, ai_col = st.columns([3.2, 1.35], gap="large")
+    else:
+        main_col = st.container()
+        ai_col = None
+
+    with main_col:
+        if contract_df is not None and not contract_df.empty:
+            _render_contract_snapshot_section(contract_snapshot)
+        else:
+            st.info("Contract data is unavailable for this player right now.")
+
+        latest_season_id = str(adv.iloc[-1].get("SEASON_ID", "")) if adv is not None and not adv.empty and "SEASON_ID" in adv.columns else ""
+        _render_prop_context_dashboard(player, latest_season_id)
+
+    if ai_col is not None:
+        with ai_col:
+            st.markdown('<div class="sticky-value-ai-rail"></div>', unsafe_allow_html=True)
+            st.markdown("### 🧠 AI Tools")
+            st.caption("Focused tools for contract and value context.")
+
+            with st.expander("Contract Value Analyzer", expanded=False):
+                if model and contract_df is not None and not contract_df.empty:
+                    birthdate = get_player_birthdate(
+                        player["id"],
+                        player_name=player.get("full_name"),
+                        player_source=player.get("source"),
+                    )
+                    age_value = _age_from_birthdate(birthdate) if birthdate else None
+                    snapshot = _contract_snapshot(contract_df, contract_agg_df)
+                    contract_summary = (
+                        f"Cap Hit: {_fmt_money(snapshot.get('cap_hit'))} • "
+                        f"Avg Salary: {_fmt_money(snapshot.get('average_salary'))} • "
+                        f"Years: {int(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) if pd.notna(pd.to_numeric(snapshot.get('contract_years'), errors='coerce')) else '—'}"
+                    )
+                    st.caption("Generate a dedicated page judging whether the player's contract looks overpaid, fair, or underpaid.")
+                    if st.button("Generate Contract Value Analysis", key="generate_player_contract_value_value_tab", use_container_width=True):
+                        pergame_for_summary = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
+                        adv_for_summary = adv if adv is not None and not adv.empty else pd.DataFrame()
+                        prompt = _player_contract_value_prompt(
+                            player["full_name"],
+                            pergame_for_summary,
+                            adv_for_summary,
+                            contract_df,
+                            contract_agg_df,
+                            age_value,
+                        )
+                        with st.spinner("Analyzing contract value…"):
+                            try:
+                                text = ai_generate_text(model, prompt, max_output_tokens=4096, temperature=0.6)
+                                st.session_state["player_contract_value_output"] = text or "No response."
+                                st.session_state["player_contract_value_player_name"] = player["full_name"]
+                                st.session_state["player_contract_value_summary"] = contract_summary
+                                st.session_state["player_report_mode"] = "contract-value"
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(_friendly_ai_error_message(e))
+                                st.caption(f"Details: {type(e).__name__}")
+                    if st.session_state.get("player_contract_value_output"):
+                        st.caption("A contract value analysis is already available.")
+                        if st.button("Open Contract Value Page", key="open_player_contract_value_page_value_tab", use_container_width=True):
+                            st.session_state["player_report_mode"] = "contract-value"
+                            st.rerun()
+                else:
+                    if not model:
+                        if AI_SETUP_ERROR:
+                            st.info("AI is unavailable in this deployment right now.")
+                            st.caption(f"Setup details: {AI_SETUP_ERROR}")
+                        else:
+                            st.info("Add your OpenAI API key to enable AI analysis.")
+                    else:
+                        st.info("Contract data is unavailable for this player right now.")
