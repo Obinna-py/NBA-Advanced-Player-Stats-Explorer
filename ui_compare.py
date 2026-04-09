@@ -139,17 +139,19 @@ def render_stat_text(text: str, *, small: bool = False) -> None:
         f"""
         <style>
         .stat-inline-text {{
-          color: rgba(255,255,255,0.86);
+          color: var(--text-color);
           line-height: 1.55;
           font-size: 0.97rem;
+          opacity: 0.9;
         }}
         .stat-inline-text--small {{
-          color: rgba(255,255,255,0.68);
+          color: var(--text-color);
           font-size: 0.85rem;
+          opacity: 0.72;
         }}
         .stat-inline-text .stat-tooltip {{
           cursor: help;
-          text-decoration: underline dotted rgba(255,255,255,0.35);
+          text-decoration: underline dotted currentColor;
           text-underline-offset: 3px;
         }}
         </style>
@@ -168,13 +170,14 @@ def _render_verdict_card(label: str, winner: str, delta: str | None) -> None:
           padding: 2px 0 0 0;
         }}
         .verdict-card-label {{
-          color: rgba(255,255,255,0.68);
+          color: var(--text-color);
+          opacity: 0.72;
           font-size: 0.82rem;
           font-weight: 600;
           margin-bottom: 8px;
         }}
         .verdict-card-winner {{
-          color: #f9fafb;
+          color: var(--text-color);
           font-size: 1.18rem;
           font-weight: 700;
           line-height: 1.2;
@@ -214,8 +217,8 @@ def _inject_sticky_ai_rail_css(anchor_class: str) -> None:
           width: min(360px, 30vw);
           height: 100vh;
           overflow-y: auto;
-          background: #262730;
-          border-left: 1px solid rgba(255,255,255,0.08);
+          background: var(--secondary-background-color);
+          border-left: 1px solid rgba(127,127,127,0.18);
           box-shadow: -18px 0 32px rgba(0,0,0,0.22);
           padding: 5.25rem 1rem 1rem 1rem;
           z-index: 40;
@@ -226,7 +229,7 @@ def _inject_sticky_ai_rail_css(anchor_class: str) -> None:
         div[data-testid="column"]:has(.{anchor_class}) h3,
         div[data-testid="column"]:has(.{anchor_class}) p,
         div[data-testid="column"]:has(.{anchor_class}) label {{
-          color: #f9fafb;
+          color: var(--text-color);
         }}
         div[data-testid="column"]:has(.{anchor_class}) .stButton > button {{
           width: 100%;
@@ -246,7 +249,7 @@ def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) 
             f'<img src="{source}" alt="{escaped_alt}" '
             f'onerror="this.onerror=null;this.src=\'{fallback_url}\';" '
             f'style="width:{width}px;max-width:100%;aspect-ratio:1/1;object-fit:cover;'
-            'border-radius:18px;background:#111827;border:1px solid rgba(255,255,255,0.08);" />'
+            'border-radius:18px;background:var(--secondary-background-color);border:1px solid rgba(127,127,127,0.18);" />'
         ),
         unsafe_allow_html=True,
     )

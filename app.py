@@ -35,6 +35,11 @@ from ui_player import (
     render_player_contract_value_page,
 )
 from ui_value import value_tab
+from ui_fantasy import (
+    fantasy_tab,
+    render_player_fantasy_value_page,
+    render_player_rest_of_season_page,
+)
 from ui_compare import (
     render_compare_tab,
     render_compare_scouting_report_page,
@@ -53,6 +58,7 @@ if AI_SETUP_ERROR:
 _VIEW_TO_TOKEN = {
     "📋 Player Info": "info",
     "📊 Stats": "stats",
+    "🧩 Fantasy": "fantasy",
     "💸 Value & Props": "value",
     "🤝 Compare Players": "compare",
 }
@@ -228,6 +234,10 @@ def _load_share_state_from_url() -> None:
         st.session_state["player_report_mode"] = "role-recommendation"
     elif report_mode == "player-contract-value":
         st.session_state["player_report_mode"] = "contract-value"
+    elif report_mode == "player-fantasy-value":
+        st.session_state["player_report_mode"] = "fantasy-value"
+    elif report_mode == "player-fantasy-ros":
+        st.session_state["player_report_mode"] = "fantasy-ros"
 
     st.session_state["_share_state_loaded"] = True
 
@@ -271,6 +281,8 @@ def _sync_share_state_to_url() -> None:
             "what-changed": "player-what-changed",
             "role-recommendation": "player-role-recommendation",
             "contract-value": "player-contract-value",
+            "fantasy-value": "player-fantasy-value",
+            "fantasy-ros": "player-fantasy-ros",
         }.get(player_mode, "player-scouting")
 
     current = {k: str(v) for k, v in st.query_params.items()}
@@ -778,6 +790,20 @@ if st.session_state["player"]:
         _sync_share_state_to_url()
         st.stop()
     if (
+        st.session_state.get("active_view") == "🧩 Fantasy"
+        and st.session_state.get("player_report_mode") == "fantasy-value"
+    ):
+        render_player_fantasy_value_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
+        st.session_state.get("active_view") == "🧩 Fantasy"
+        and st.session_state.get("player_report_mode") == "fantasy-ros"
+    ):
+        render_player_rest_of_season_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if (
         st.session_state.get("active_view") == "💸 Value & Props"
         and st.session_state.get("player_report_mode") == "contract-value"
     ):
@@ -787,7 +813,7 @@ if st.session_state["player"]:
 
     view = st.radio(
         "View",
-        ["📋 Player Info", "📊 Stats", "💸 Value & Props", "🤝 Compare Players"],
+        ["📋 Player Info", "📊 Stats", "🧩 Fantasy", "💸 Value & Props", "🤝 Compare Players"],
         horizontal=True,
         key="active_view",
         label_visibility="collapsed",
@@ -796,6 +822,8 @@ if st.session_state["player"]:
         info_tab(st.session_state["player"])
     elif view == "📊 Stats":
         stats_tab(st.session_state["player"], model)
+    elif view == "🧩 Fantasy":
+        fantasy_tab(st.session_state["player"], model)
     elif view == "💸 Value & Props":
         value_tab(st.session_state["player"], model)
     else:

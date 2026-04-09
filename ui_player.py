@@ -112,7 +112,7 @@ def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) 
             f'<img src="{source}" alt="{escaped_alt}" '
             f'onerror="this.onerror=null;this.src=\'{fallback_url}\';" '
             f'style="width:{width}px;max-width:100%;aspect-ratio:1/1;object-fit:cover;'
-            'border-radius:18px;background:#111827;border:1px solid rgba(255,255,255,0.08);" />'
+            'border-radius:18px;background:var(--secondary-background-color);border:1px solid rgba(127,127,127,0.18);" />'
         ),
         unsafe_allow_html=True,
     )
@@ -768,20 +768,21 @@ def _render_hover_stat_cards(cards: list[tuple[str, str]], columns_per_row: int 
         """
         <style>
         .hover-stat-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.08);
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(127,127,127,0.18);
           border-radius: 14px;
           padding: 14px 16px;
           min-height: 110px;
         }
         .hover-stat-label {
-          color: rgba(255,255,255,0.72);
+          color: var(--text-color);
+          opacity: 0.72;
           font-size: 0.85rem;
           font-weight: 600;
           margin-bottom: 8px;
         }
         .hover-stat-value {
-          color: #f9fafb;
+          color: var(--text-color);
           font-size: clamp(1.3rem, 2vw, 2rem);
           font-weight: 700;
           line-height: 1.1;
@@ -794,7 +795,7 @@ def _render_hover_stat_cards(cards: list[tuple[str, str]], columns_per_row: int 
         }
         .hover-stat-label .stat-tooltip {
           cursor: help;
-          text-decoration: underline dotted rgba(255,255,255,0.35);
+          text-decoration: underline dotted currentColor;
           text-underline-offset: 3px;
         }
         </style>
@@ -825,20 +826,21 @@ def _render_impact_summary_cards(score: float, strongest_driver: str, strongest_
         """
         <style>
         .impact-summary-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.08);
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(127,127,127,0.18);
           border-radius: 14px;
           padding: 14px 16px;
           min-height: 118px;
         }
         .impact-summary-label {
-          color: rgba(255,255,255,0.72);
+          color: var(--text-color);
+          opacity: 0.72;
           font-size: 0.84rem;
           font-weight: 600;
           margin-bottom: 8px;
         }
         .impact-summary-value {
-          color: #f9fafb;
+          color: var(--text-color);
           font-size: 2rem;
           font-weight: 700;
           line-height: 1.08;
@@ -946,20 +948,21 @@ def _render_trend_summary_cards(trend_label: str, last3_delta: float | None, las
         """
         <style>
         .trend-summary-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.08);
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(127,127,127,0.18);
           border-radius: 14px;
           padding: 14px 16px;
           min-height: 112px;
         }
         .trend-summary-label {
-          color: rgba(255,255,255,0.72);
+          color: var(--text-color);
+          opacity: 0.72;
           font-size: 0.84rem;
           font-weight: 600;
           margin-bottom: 8px;
         }
         .trend-summary-value {
-          color: #f9fafb;
+          color: var(--text-color);
           font-size: clamp(1.3rem, 2vw, 1.9rem);
           font-weight: 700;
           line-height: 1.12;
