@@ -388,6 +388,34 @@ def get_balldontlie_team_games(team_id: int, per_page: int = 10) -> pd.DataFrame
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def get_balldontlie_team_players(team_id: int) -> list[dict]:
+    if team_id is None:
+        return []
+    rows = []
+    cursor = None
+    while True:
+        params = {"team_ids[]": [int(team_id)], "per_page": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        payload = _balldontlie_get("/v1/players", params=params, timeout=max(_BALLDONTLIE_TIMEOUT_S, 8))
+        data = payload.get("data", []) or []
+        for player in data:
+            team = player.get("team", {}) or {}
+            rows.append({
+                "id": player.get("id"),
+                "full_name": f"{player.get('first_name', '')} {player.get('last_name', '')}".strip(),
+                "position": player.get("position"),
+                "team_id": team.get("id"),
+                "team_name": team.get("full_name") or team.get("name"),
+                "team_abbreviation": team.get("abbreviation"),
+            })
+        cursor = (payload.get("meta") or {}).get("next_cursor")
+        if not cursor or not data:
+            break
+    return rows
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_balldontlie_player_contracts(player_id: int, player_name: str | None = None, player_source: str | None = None) -> pd.DataFrame:
     bd_player_id = _resolve_balldontlie_player_id(player_id, player_name=player_name, player_source=player_source)
     if not bd_player_id:

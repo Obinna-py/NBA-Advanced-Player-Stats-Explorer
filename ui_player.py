@@ -9,7 +9,7 @@ import unicodedata
 from datetime import datetime
 from config import ai_generate_text, AI_SETUP_ERROR
 from logos import college_logos
-from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_balldontlie_league_season_averages, get_balldontlie_player_contracts, get_balldontlie_player_contract_aggregates, get_team_record_for_season, get_balldontlie_player_game_logs
+from fetch import get_player_career, get_player_info, get_player_birthdate, get_balldontlie_player, get_balldontlie_team_games, get_nba_headshot_url, get_placeholder_headshot_data_uri, get_balldontlie_league_season_averages, get_balldontlie_player_contracts, get_balldontlie_player_contract_aggregates, get_team_record_for_season, get_balldontlie_player_game_logs, get_balldontlie_team_players
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players, compute_impact_index
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
@@ -917,6 +917,189 @@ def _prop_thresholds(metric_label: str, season_avg: float | None) -> list[float]
     return sorted(set(base))
 
 
+def _prop_consistency_label(score: float | None) -> str:
+    if score is None or pd.isna(score):
+        return "Unknown"
+    if score >= 78:
+        return "Very Stable"
+    if score >= 62:
+        return "Fairly Stable"
+    if score >= 45:
+        return "Moderate Swing"
+    return "Highly Volatile"
+
+
+def _prop_volatility_label(score: float | None) -> str:
+    if score is None or pd.isna(score):
+        return "Unknown"
+    if score >= 55:
+        return "High Variance"
+    if score >= 35:
+        return "Noticeable Variance"
+    if score >= 18:
+        return "Manageable Variance"
+    return "Low Variance"
+
+
+def _render_trend_summary_cards(trend_label: str, last3_delta: float | None, last5_delta: float | None, last10_delta: float | None) -> None:
+    st.markdown(
+        """
+        <style>
+        .trend-summary-card {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 14px;
+          padding: 14px 16px;
+          min-height: 112px;
+        }
+        .trend-summary-label {
+          color: rgba(255,255,255,0.72);
+          font-size: 0.84rem;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .trend-summary-value {
+          color: #f9fafb;
+          font-size: clamp(1.3rem, 2vw, 1.9rem);
+          font-weight: 700;
+          line-height: 1.12;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .trend-summary-value.is-text {
+          font-size: clamp(1.0rem, 1.5vw, 1.35rem);
+          line-height: 1.2;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    items = [
+        ("Trend", trend_label or "—", True),
+        ("Last 3 vs Season", "—" if pd.isna(last3_delta) else f"{'+' if last3_delta > 0 else ''}{last3_delta:.1f}", False),
+        ("Last 5 vs Season", "—" if pd.isna(last5_delta) else f"{'+' if last5_delta > 0 else ''}{last5_delta:.1f}", False),
+        ("Last 10 vs Season", "—" if pd.isna(last10_delta) else f"{'+' if last10_delta > 0 else ''}{last10_delta:.1f}", False),
+    ]
+    cols = st.columns(len(items))
+    for col, (label, value, is_text) in zip(cols, items):
+        extra_class = " is-text" if is_text else ""
+        with col:
+            st.markdown(
+                f"""
+                <div class="trend-summary-card">
+                  <div class="trend-summary-label">{html.escape(label)}</div>
+                  <div class="trend-summary-value{extra_class}">{html.escape(value)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def _recent_trend_label(last_5_delta: float | None, last_10_delta: float | None) -> str:
+    if last_5_delta is None or pd.isna(last_5_delta):
+        return "No clear trend"
+    if last_5_delta >= 4:
+        return "Red Hot"
+    if last_5_delta >= 2:
+        return "Heating Up"
+    if last_5_delta <= -4:
+        return "Ice Cold"
+    if last_5_delta <= -2:
+        return "Cooling Off"
+    if last_10_delta is not None and pd.notna(last_10_delta) and abs(last_10_delta) >= 2:
+        return "Slow Shift"
+    return "Steady"
+
+
+def _render_without_teammate_split(player: dict, latest_season_id: str, logs: pd.DataFrame, metric_label: str, stat_col: str, prop_line: float) -> None:
+    player_team_id = player.get("team_id")
+    if player_team_id is None:
+        bd_player = get_balldontlie_player(player["id"])
+        player_team_id = (bd_player or {}).get("team_id")
+    if player_team_id is None:
+        return
+
+    teammates = [
+        t for t in get_balldontlie_team_players(int(player_team_id))
+        if t.get("id") and str(t.get("id")) != str(player.get("id"))
+    ]
+    if not teammates:
+        return
+
+    teammate_options = sorted(
+        teammates,
+        key=lambda t: ((t.get("position") or "Z"), t.get("full_name") or ""),
+    )
+    teammate_lookup = {t["full_name"]: t for t in teammate_options if t.get("full_name")}
+
+    with st.expander("Usage Without Key Teammates", expanded=False):
+        teammate_name = st.selectbox(
+            "Select teammate to split by",
+            list(teammate_lookup.keys()),
+            key=f"without_teammate_{player.get('id')}_{metric_label}",
+        )
+        teammate = teammate_lookup.get(teammate_name)
+        if not teammate:
+            return
+
+        teammate_logs = get_balldontlie_player_game_logs(
+            teammate["id"],
+            [latest_season_id],
+            player_name=teammate.get("full_name"),
+            player_source="balldontlie",
+            season_type="Regular Season",
+        )
+        if teammate_logs is None or teammate_logs.empty or "GAME_ID" not in teammate_logs.columns:
+            st.info("That teammate's game logs are not available right now.")
+            return
+
+        stat_logs = logs.copy()
+        stat_logs["Value"] = pd.to_numeric(stat_logs.get(stat_col), errors="coerce")
+        stat_logs = stat_logs.dropna(subset=["GAME_ID", "Value"])
+        if stat_logs.empty:
+            return
+
+        teammate_game_ids = set(pd.to_numeric(teammate_logs.get("GAME_ID"), errors="coerce").dropna().astype(int).tolist())
+        stat_logs["GAME_ID_INT"] = pd.to_numeric(stat_logs["GAME_ID"], errors="coerce")
+        with_teammate = stat_logs[stat_logs["GAME_ID_INT"].isin(teammate_game_ids)].copy()
+        without_teammate = stat_logs[~stat_logs["GAME_ID_INT"].isin(teammate_game_ids)].copy()
+
+        with_avg = float(with_teammate["Value"].mean()) if not with_teammate.empty else np.nan
+        without_avg = float(without_teammate["Value"].mean()) if not without_teammate.empty else np.nan
+        with_over = float((with_teammate["Value"] > prop_line).mean() * 100.0) if not with_teammate.empty else np.nan
+        without_over = float((without_teammate["Value"] > prop_line).mean() * 100.0) if not without_teammate.empty else np.nan
+        with_fga = float(pd.to_numeric(with_teammate.get("FGA"), errors="coerce").mean()) if not with_teammate.empty and "FGA" in with_teammate.columns else np.nan
+        without_fga = float(pd.to_numeric(without_teammate.get("FGA"), errors="coerce").mean()) if not without_teammate.empty and "FGA" in without_teammate.columns else np.nan
+        with_min = float(pd.to_numeric(with_teammate.get("MIN"), errors="coerce").mean()) if not with_teammate.empty and "MIN" in with_teammate.columns else np.nan
+        without_min = float(pd.to_numeric(without_teammate.get("MIN"), errors="coerce").mean()) if not without_teammate.empty and "MIN" in without_teammate.columns else np.nan
+
+        render_stat_text(f"Splitting {metric_label} by games with vs without {teammate_name}.", small=True)
+        _render_hover_stat_cards(
+            [
+                ("With Avg", f"{with_avg:.1f}" if pd.notna(with_avg) else "—"),
+                ("Without Avg", f"{without_avg:.1f}" if pd.notna(without_avg) else "—"),
+                (f"Over {prop_line:.1f} With", f"{with_over:.1f}%" if pd.notna(with_over) else "—"),
+                (f"Over {prop_line:.1f} Without", f"{without_over:.1f}%" if pd.notna(without_over) else "—"),
+                ("Games Split", f"{len(with_teammate)} / {len(without_teammate)}"),
+            ],
+            columns_per_row=2,
+        )
+
+        context_parts = []
+        if pd.notna(with_fga) and pd.notna(without_fga):
+            fga_delta = without_fga - with_fga
+            context_parts.append(f"FGA shifts by {fga_delta:+.1f} without {teammate_name}")
+        if pd.notna(with_min) and pd.notna(without_min):
+            min_delta = without_min - with_min
+            context_parts.append(f"minutes shift by {min_delta:+.1f}")
+        if context_parts:
+            render_stat_text(". ".join(context_parts) + ".", small=True)
+        render_stat_text(
+            "This split uses balldontlie game logs: 'with' means the teammate logged stats in that game, and 'without' means they did not appear in the stat feed for that game.",
+            small=True,
+        )
+
+
 def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
     if not latest_season_id:
         return
@@ -967,6 +1150,10 @@ def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
     cv = (std_dev / season_avg) if season_avg and season_avg > 0 else np.nan
     volatility_score = min(max((cv or 0.0) * 100.0, 0.0), 100.0) if pd.notna(cv) else np.nan
     consistency_score = 100.0 - volatility_score if pd.notna(volatility_score) else np.nan
+    median_value = float(valid.median()) if len(valid) else np.nan
+    hit_band = float(((valid >= season_avg - std_dev) & (valid <= season_avg + std_dev)).mean() * 100.0) if len(valid) else np.nan
+    consistency_label = _prop_consistency_label(consistency_score)
+    volatility_label = _prop_volatility_label(volatility_score)
 
     summary_cols = st.columns(5)
     summary_values = [
@@ -983,10 +1170,33 @@ def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
     context_cols = st.columns(2)
     with context_cols[0]:
         st.metric("Consistency Score", f"{consistency_score:.1f}" if pd.notna(consistency_score) else "—")
-        render_stat_text("Higher is steadier. This is based on how tight the game-to-game distribution is around the season average.", small=True)
+        render_stat_text(
+            f"{consistency_label}. Higher is steadier, based on how tightly the game-by-game results stay around the season average.",
+            small=True,
+        )
     with context_cols[1]:
         st.metric("Volatility Score", f"{volatility_score:.1f}" if pd.notna(volatility_score) else "—")
-        render_stat_text("Higher means wider game-to-game swings, which usually means more risk on a prop line.", small=True)
+        render_stat_text(
+            f"{volatility_label}. Higher means wider game-to-game swings, which usually means more risk on a prop line.",
+            small=True,
+        )
+
+    spread_cols = st.columns(3)
+    spread_values = [
+        ("Median", median_value),
+        ("Std Dev", std_dev),
+        ("Within 1 Std Dev", hit_band),
+    ]
+    for col, (label, value) in zip(spread_cols, spread_values):
+        with col:
+            if label == "Within 1 Std Dev":
+                st.metric(label, f"{value:.1f}%" if pd.notna(value) else "—")
+            else:
+                st.metric(label, f"{value:.1f}" if pd.notna(value) else "—")
+    render_stat_text(
+        "Median helps show the typical outcome, standard deviation measures game-to-game spread, and the 1-standard-deviation band shows how often the player stays in their normal range.",
+        small=True,
+    )
 
     thresholds = _prop_thresholds(metric_label, season_avg)
     st.markdown("#### Over / Under Hit Rates")
@@ -1012,6 +1222,28 @@ def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
 
     recent_5 = valid.head(5)
     recent_10 = valid.head(10)
+    recent_3 = valid.head(3)
+    last3_avg = float(recent_3.mean()) if len(recent_3) else np.nan
+    last5_delta = float(last5_avg - season_avg) if pd.notna(last5_avg) and pd.notna(season_avg) else np.nan
+    last10_delta = float(last10_avg - season_avg) if pd.notna(last10_avg) and pd.notna(season_avg) else np.nan
+    last3_delta = float(last3_avg - season_avg) if pd.notna(last3_avg) and pd.notna(season_avg) else np.nan
+    trend_label = _recent_trend_label(last5_delta, last10_delta)
+    if len(recent_5):
+        above_avg_count = int((recent_5 > season_avg).sum()) if pd.notna(season_avg) else 0
+        below_avg_count = int((recent_5 < season_avg).sum()) if pd.notna(season_avg) else 0
+    else:
+        above_avg_count = 0
+        below_avg_count = 0
+
+    st.markdown("#### Recent Trend Analyzer")
+    _render_trend_summary_cards(trend_label, last3_delta, last5_delta, last10_delta)
+    render_stat_text(
+        f"Last 5 sample: {above_avg_count} games above the season average and {below_avg_count} below it. "
+        "Positive deltas mean the player is trending above their normal season level.",
+        small=True,
+    )
+
+    _render_without_teammate_split(player, latest_season_id, logs, metric_label, stat_col, float(prop_line))
 
     def _rate(series: pd.Series, mode: str) -> float:
         if len(series) == 0:
