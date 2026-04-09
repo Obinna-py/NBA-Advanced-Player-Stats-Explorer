@@ -40,6 +40,13 @@ from ui_fantasy import (
     render_player_fantasy_value_page,
     render_player_rest_of_season_page,
 )
+from ui_gm import (
+    render_gm_workspace,
+    render_player_trade_value_page,
+    render_player_co_star_page,
+    render_player_roster_fit_page,
+    render_player_trade_package_page,
+)
 from ui_compare import (
     render_compare_tab,
     render_compare_scouting_report_page,
@@ -63,6 +70,7 @@ _VIEW_TO_TOKEN = {
     "🤝 Compare Players": "compare",
 }
 _TOKEN_TO_VIEW = {token: label for label, token in _VIEW_TO_TOKEN.items()}
+_APP_SECTIONS = ["🏀 Player Explorer", "🏗 GM / Team Building"]
 _NL_ARCHETYPE_OPTIONS = [
     "Custom search",
     "3 and D",
@@ -164,6 +172,12 @@ def _open_player(selected_player: dict) -> None:
     st.session_state["player_report_mode"] = None
 
 
+def _open_gm_player(selected_player: dict) -> None:
+    st.session_state["gm_player"] = selected_player
+    st.session_state["player_report_mode"] = None
+    st.session_state["app_section"] = "🏗 GM / Team Building"
+
+
 def _player_search_suggestions(searchterm: str) -> list[tuple[str, dict]]:
     if not searchterm or len(searchterm.strip()) < 2:
         return []
@@ -238,6 +252,14 @@ def _load_share_state_from_url() -> None:
         st.session_state["player_report_mode"] = "fantasy-value"
     elif report_mode == "player-fantasy-ros":
         st.session_state["player_report_mode"] = "fantasy-ros"
+    elif report_mode == "player-trade-value":
+        st.session_state["player_report_mode"] = "trade-value"
+    elif report_mode == "player-co-star":
+        st.session_state["player_report_mode"] = "co-star"
+    elif report_mode == "player-roster-fit":
+        st.session_state["player_report_mode"] = "roster-fit"
+    elif report_mode == "player-trade-package":
+        st.session_state["player_report_mode"] = "trade-package"
 
     st.session_state["_share_state_loaded"] = True
 
@@ -283,6 +305,10 @@ def _sync_share_state_to_url() -> None:
             "contract-value": "player-contract-value",
             "fantasy-value": "player-fantasy-value",
             "fantasy-ros": "player-fantasy-ros",
+            "trade-value": "player-trade-value",
+            "co-star": "player-co-star",
+            "roster-fit": "player-roster-fit",
+            "trade-package": "player-trade-package",
         }.get(player_mode, "player-scouting")
 
     current = {k: str(v) for k, v in st.query_params.items()}
@@ -295,6 +321,7 @@ def _sync_share_state_to_url() -> None:
 for key, default in [
     ("matches", []),
     ("player", None),
+    ("gm_player", None),
     ("search_feedback", None),
     ("compare_players", []),
     ("nl_results", None),
@@ -304,12 +331,15 @@ for key, default in [
     ("compare_report_mode", None),
     ("player_report_mode", None),
     ("requested_active_view", None),
+    ("requested_app_section", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 if "active_view" not in st.session_state:
     st.session_state["active_view"] = "📊 Stats"
+if "app_section" not in st.session_state:
+    st.session_state["app_section"] = "🏀 Player Explorer"
 if "custom_stat_rule_count" not in st.session_state:
     st.session_state["custom_stat_rule_count"] = 3
 
@@ -317,203 +347,274 @@ _load_share_state_from_url()
 
 if st.session_state.get("requested_active_view"):
     st.session_state["active_view"] = st.session_state.pop("requested_active_view")
+if st.session_state.get("requested_app_section"):
+    st.session_state["app_section"] = st.session_state.pop("requested_app_section")
+if st.session_state.get("active_view") not in _VIEW_TO_TOKEN:
+    st.session_state["active_view"] = "📊 Stats"
+
+app_section = st.radio(
+    "App section",
+    _APP_SECTIONS,
+    horizontal=True,
+    key="app_section",
+    label_visibility="collapsed",
+)
 
 with st.sidebar:
-    st.header("🔍 Search Player")
-    if st_searchbox is not None:
-        selected_player = st_searchbox(
-            _player_search_suggestions,
-            label="Enter an NBA player's name",
-            placeholder="Start typing a player name...",
-            key="player_searchbox",
-            clear_on_submit=False,
-            edit_after_submit="option",
-            style_overrides=_SEARCHBOX_STYLE_OVERRIDES,
-        )
-        if isinstance(selected_player, dict) and selected_player.get("id") is not None:
-            current = st.session_state.get("player")
-            if not current or player_to_share_token(current) != player_to_share_token(selected_player):
-                _open_player(selected_player)
-                st.rerun()
-        search_clicked = False
-        name = ""
-    else:
-        name = st.text_input("Enter an NBA player's name", key="player_search_name")
-        live_suggestions = []
-        if name and len(name.strip()) >= 2:
-            try:
-                live_suggestions = search_players(name.strip())[:8]
-            except Exception:
-                live_suggestions = []
+    if app_section == "🏀 Player Explorer":
+        st.header("🔍 Search Player")
+        if st_searchbox is not None:
+            selected_player = st_searchbox(
+                _player_search_suggestions,
+                label="Enter an NBA player's name",
+                placeholder="Start typing a player name...",
+                key="player_searchbox",
+                clear_on_submit=False,
+                edit_after_submit="option",
+                style_overrides=_SEARCHBOX_STYLE_OVERRIDES,
+            )
+            if isinstance(selected_player, dict) and selected_player.get("id") is not None:
+                current = st.session_state.get("player")
+                if not current or player_to_share_token(current) != player_to_share_token(selected_player):
+                    _open_player(selected_player)
+                    st.rerun()
+            search_clicked = False
+            name = ""
+        else:
+            name = st.text_input("Enter an NBA player's name", key="player_search_name")
+            live_suggestions = []
+            if name and len(name.strip()) >= 2:
+                try:
+                    live_suggestions = search_players(name.strip())[:8]
+                except Exception:
+                    live_suggestions = []
 
-        if live_suggestions:
-            st.caption("Live matches")
-            for idx, player in enumerate(live_suggestions[:6]):
-                label = player["full_name"]
-                meta = []
-                if player.get("position"):
-                    meta.append(player["position"])
-                if player.get("team_name"):
-                    meta.append(player["team_name"])
-                meta_text = f" ({' • '.join(meta)})" if meta else ""
-                if st.button(f"{label}{meta_text}", key=f"live_match_{idx}", use_container_width=True):
-                    _open_player(player)
+            if live_suggestions:
+                st.caption("Live matches")
+                for idx, player in enumerate(live_suggestions[:6]):
+                    label = player["full_name"]
+                    meta = []
+                    if player.get("position"):
+                        meta.append(player["position"])
+                    if player.get("team_name"):
+                        meta.append(player["team_name"])
+                    meta_text = f" ({' • '.join(meta)})" if meta else ""
+                    if st.button(f"{label}{meta_text}", key=f"live_match_{idx}", use_container_width=True):
+                        _open_player(player)
+                        st.rerun()
+
+            search_clicked = st.button("Search")
+        st.divider()
+        st.subheader("Natural Language Search")
+        nl_preset = st.selectbox(
+            "Choose an archetype / prompt",
+            _NL_ARCHETYPE_OPTIONS,
+            index=0,
+            key="nl_preset",
+        )
+        if nl_preset != "Custom search" and st.session_state.get("nl_query") != nl_preset:
+            st.session_state["nl_query"] = nl_preset
+        nl_query = st.text_area(
+            "Describe the kind of player you want",
+            key="nl_query",
+            height=90,
+            placeholder="Example: elite rim-protecting bigs with scoring punch",
+        )
+        nl_search_clicked = st.button("Find Players", use_container_width=True)
+        st.divider()
+        st.subheader("Custom Stat Finder")
+        rule_controls_left, rule_controls_right = st.columns(2)
+        with rule_controls_left:
+            if st.button("Add rule", use_container_width=True, key="custom_stat_add_rule"):
+                st.session_state["custom_stat_rule_count"] = min(int(st.session_state.get("custom_stat_rule_count", 3)) + 1, 10)
+                st.rerun()
+        with rule_controls_right:
+            if st.button("Remove rule", use_container_width=True, key="custom_stat_remove_rule"):
+                st.session_state["custom_stat_rule_count"] = max(int(st.session_state.get("custom_stat_rule_count", 3)) - 1, 1)
+                st.rerun()
+        with st.form("custom_stat_finder_form"):
+            cs_position = st.selectbox(
+                "Position family",
+                ["Any", "Guard", "Wing", "Big"],
+                index=0,
+                key="custom_stat_position",
+            )
+            cs_role = st.selectbox(
+                "Primary role filter",
+                _CUSTOM_ROLE_OPTIONS,
+                index=0,
+                key="custom_stat_role_filter",
+            )
+            cs_tag = st.selectbox(
+                "Archetype / tag filter",
+                _CUSTOM_TAG_OPTIONS,
+                index=0,
+                key="custom_stat_tag_filter",
+            )
+            cs_percentile_metric = st.selectbox(
+                "Percentile gate metric",
+                ["None"] + custom_stat_finder_metric_labels(),
+                index=0,
+                key="custom_stat_percentile_metric",
+            )
+            cs_min_percentile = st.slider(
+                "Minimum percentile",
+                min_value=50,
+                max_value=99,
+                value=75,
+                step=1,
+                key="custom_stat_min_percentile",
+            )
+            cs_min_gp = st.slider("Min games", min_value=5, max_value=82, value=20, step=1, key="custom_stat_min_gp")
+            cs_min_mpg = st.slider("Min minutes per game", min_value=5.0, max_value=36.0, value=15.0, step=1.0, key="custom_stat_min_mpg")
+            st.caption(f"Active rules: {int(st.session_state.get('custom_stat_rule_count', 3))}")
+            for idx in range(int(st.session_state.get("custom_stat_rule_count", 3))):
+                st.caption(f"Rule {idx + 1}")
+                metric_col, op_col, value_col = st.columns([1.5, 0.9, 1.1])
+                with metric_col:
+                    st.selectbox(
+                        "Metric",
+                        _CUSTOM_STAT_METRIC_OPTIONS,
+                        index=0,
+                        key=f"custom_stat_metric_{idx}",
+                        label_visibility="collapsed",
+                    )
+                with op_col:
+                    st.selectbox(
+                        "Op",
+                        [">=", "<="],
+                        index=0,
+                        key=f"custom_stat_op_{idx}",
+                        label_visibility="collapsed",
+                    )
+                with value_col:
+                    st.number_input(
+                        "Value",
+                        value=0.0,
+                        step=0.5,
+                        key=f"custom_stat_value_{idx}",
+                        label_visibility="collapsed",
+                    )
+            cs_sort_by = st.selectbox("Sort by", custom_stat_finder_metric_labels(), index=0, key="custom_stat_sort_by")
+            cs_sort_dir = st.selectbox("Sort direction", ["Highest first", "Lowest first"], index=0, key="custom_stat_sort_dir")
+            cs_limit = st.slider("Result limit", min_value=5, max_value=40, value=20, step=1, key="custom_stat_limit")
+            custom_search_clicked = st.form_submit_button("Run Custom Finder", use_container_width=True)
+        st.divider()
+        st.subheader("Watchlist")
+        watchlist_players = get_watchlist_players()
+        current_player = st.session_state.get("player")
+        current_token = player_to_share_token(current_player)
+        watchlist_tokens = {player_to_share_token(p) for p in watchlist_players}
+
+        if current_player:
+            if current_token in watchlist_tokens:
+                if st.button("Remove Current Player", use_container_width=True):
+                    remove_player_from_watchlist(current_player)
+                    st.rerun()
+            else:
+                if st.button("Save Current Player", use_container_width=True):
+                    add_player_to_watchlist(current_player)
                     st.rerun()
 
-        search_clicked = st.button("Search")
-    st.divider()
-    st.subheader("Natural Language Search")
-    nl_preset = st.selectbox(
-        "Choose an archetype / prompt",
-        _NL_ARCHETYPE_OPTIONS,
-        index=0,
-        key="nl_preset",
-    )
-    if nl_preset != "Custom search" and st.session_state.get("nl_query") != nl_preset:
-        st.session_state["nl_query"] = nl_preset
-    nl_query = st.text_area(
-        "Describe the kind of player you want",
-        key="nl_query",
-        height=90,
-        placeholder="Example: elite rim-protecting bigs with scoring punch",
-    )
-    nl_search_clicked = st.button("Find Players", use_container_width=True)
-    st.divider()
-    st.subheader("Custom Stat Finder")
-    rule_controls_left, rule_controls_right = st.columns(2)
-    with rule_controls_left:
-        if st.button("Add rule", use_container_width=True, key="custom_stat_add_rule"):
-            st.session_state["custom_stat_rule_count"] = min(int(st.session_state.get("custom_stat_rule_count", 3)) + 1, 10)
-            st.rerun()
-    with rule_controls_right:
-        if st.button("Remove rule", use_container_width=True, key="custom_stat_remove_rule"):
-            st.session_state["custom_stat_rule_count"] = max(int(st.session_state.get("custom_stat_rule_count", 3)) - 1, 1)
-            st.rerun()
-    with st.form("custom_stat_finder_form"):
-        cs_position = st.selectbox(
-            "Position family",
-            ["Any", "Guard", "Wing", "Big"],
-            index=0,
-            key="custom_stat_position",
-        )
-        cs_role = st.selectbox(
-            "Primary role filter",
-            _CUSTOM_ROLE_OPTIONS,
-            index=0,
-            key="custom_stat_role_filter",
-        )
-        cs_tag = st.selectbox(
-            "Archetype / tag filter",
-            _CUSTOM_TAG_OPTIONS,
-            index=0,
-            key="custom_stat_tag_filter",
-        )
-        cs_percentile_metric = st.selectbox(
-            "Percentile gate metric",
-            ["None"] + custom_stat_finder_metric_labels(),
-            index=0,
-            key="custom_stat_percentile_metric",
-        )
-        cs_min_percentile = st.slider(
-            "Minimum percentile",
-            min_value=50,
-            max_value=99,
-            value=75,
-            step=1,
-            key="custom_stat_min_percentile",
-        )
-        cs_min_gp = st.slider("Min games", min_value=5, max_value=82, value=20, step=1, key="custom_stat_min_gp")
-        cs_min_mpg = st.slider("Min minutes per game", min_value=5.0, max_value=36.0, value=15.0, step=1.0, key="custom_stat_min_mpg")
-        st.caption(f"Active rules: {int(st.session_state.get('custom_stat_rule_count', 3))}")
-        for idx in range(int(st.session_state.get("custom_stat_rule_count", 3))):
-            st.caption(f"Rule {idx + 1}")
-            metric_col, op_col, value_col = st.columns([1.5, 0.9, 1.1])
-            with metric_col:
-                st.selectbox(
-                    "Metric",
-                    _CUSTOM_STAT_METRIC_OPTIONS,
-                    index=0,
-                    key=f"custom_stat_metric_{idx}",
-                    label_visibility="collapsed",
-                )
-            with op_col:
-                st.selectbox(
-                    "Op",
-                    [">=", "<="],
-                    index=0,
-                    key=f"custom_stat_op_{idx}",
-                    label_visibility="collapsed",
-                )
-            with value_col:
-                st.number_input(
-                    "Value",
-                    value=0.0,
-                    step=0.5,
-                    key=f"custom_stat_value_{idx}",
-                    label_visibility="collapsed",
-                )
-        cs_sort_by = st.selectbox("Sort by", custom_stat_finder_metric_labels(), index=0, key="custom_stat_sort_by")
-        cs_sort_dir = st.selectbox("Sort direction", ["Highest first", "Lowest first"], index=0, key="custom_stat_sort_dir")
-        cs_limit = st.slider("Result limit", min_value=5, max_value=40, value=20, step=1, key="custom_stat_limit")
-        custom_search_clicked = st.form_submit_button("Run Custom Finder", use_container_width=True)
-    st.divider()
-    st.subheader("Watchlist")
-    watchlist_players = get_watchlist_players()
-    current_player = st.session_state.get("player")
-    current_token = player_to_share_token(current_player)
-    watchlist_tokens = {player_to_share_token(p) for p in watchlist_players}
-
-    if current_player:
-        if current_token in watchlist_tokens:
-            if st.button("Remove Current Player", use_container_width=True):
-                remove_player_from_watchlist(current_player)
-                st.rerun()
+        if watchlist_players:
+            watch_options = {player["full_name"]: player for player in watchlist_players}
+            selected_watch = st.selectbox(
+                "Saved players",
+                ["Select a saved player"] + list(watch_options.keys()),
+                index=0,
+                key="watchlist_select",
+            )
+            open_col, remove_col = st.columns(2)
+            with open_col:
+                if selected_watch != "Select a saved player" and st.button("Open", use_container_width=True, key="watchlist_open"):
+                    st.session_state["player"] = watch_options[selected_watch]
+                    st.session_state["matches"] = []
+                    st.session_state["compare_players"] = []
+                    st.session_state["nl_results"] = None
+                    st.session_state["nl_meta"] = None
+                    st.session_state["active_view"] = "📊 Stats"
+                    st.rerun()
+            with remove_col:
+                if selected_watch != "Select a saved player" and st.button("Remove", use_container_width=True, key="watchlist_remove"):
+                    remove_player_from_watchlist(watch_options[selected_watch])
+                    st.rerun()
         else:
-            if st.button("Save Current Player", use_container_width=True):
-                add_player_to_watchlist(current_player)
-                st.rerun()
+            st.caption("Save players here for quick access later.")
+        st.divider()
+        st.subheader("API Status")
+        run_balldontlie_check = st.button("Check balldontlie API", use_container_width=True)
 
-    if watchlist_players:
-        watch_options = {player["full_name"]: player for player in watchlist_players}
-        selected_watch = st.selectbox(
-            "Saved players",
-            ["Select a saved player"] + list(watch_options.keys()),
-            index=0,
-            key="watchlist_select",
-        )
-        open_col, remove_col = st.columns(2)
-        with open_col:
-            if selected_watch != "Select a saved player" and st.button("Open", use_container_width=True, key="watchlist_open"):
-                st.session_state["player"] = watch_options[selected_watch]
-                st.session_state["matches"] = []
-                st.session_state["compare_players"] = []
-                st.session_state["nl_results"] = None
-                st.session_state["nl_meta"] = None
-                st.session_state["active_view"] = "📊 Stats"
-                st.rerun()
-        with remove_col:
-            if selected_watch != "Select a saved player" and st.button("Remove", use_container_width=True, key="watchlist_remove"):
-                remove_player_from_watchlist(watch_options[selected_watch])
-                st.rerun()
+        if run_balldontlie_check:
+            st.session_state["balldontlie_api_health"] = check_balldontlie_api_health()
+
+        balldontlie_health = st.session_state.get("balldontlie_api_health")
+        if balldontlie_health:
+            st.caption("balldontlie")
+            if balldontlie_health.get("ok"):
+                st.success(balldontlie_health.get("message", "balldontlie API is reachable."))
+            else:
+                st.warning("balldontlie looks slow or unavailable right now.")
+                st.caption(f"{balldontlie_health.get('error_type', 'Error')}: {balldontlie_health.get('message', 'Unknown error')}")
     else:
-        st.caption("Save players here for quick access later.")
-    st.divider()
-    st.subheader("API Status")
-    run_balldontlie_check = st.button("Check balldontlie API", use_container_width=True)
-
-    if run_balldontlie_check:
-        st.session_state["balldontlie_api_health"] = check_balldontlie_api_health()
-
-    balldontlie_health = st.session_state.get("balldontlie_api_health")
-    if balldontlie_health:
-        st.caption("balldontlie")
-        if balldontlie_health.get("ok"):
-            st.success(balldontlie_health.get("message", "balldontlie API is reachable."))
+        st.header("🏗 GM Workspace")
+        st.caption("Set a focal player if you want player-specific trade value, co-star, and roster-fit analysis.")
+        if st_searchbox is not None:
+            selected_gm_player = st_searchbox(
+                _player_search_suggestions,
+                label="Set focal player",
+                placeholder="Start typing a player name...",
+                key="gm_player_searchbox",
+                clear_on_submit=False,
+                edit_after_submit="option",
+                style_overrides=_SEARCHBOX_STYLE_OVERRIDES,
+            )
+            if isinstance(selected_gm_player, dict) and selected_gm_player.get("id") is not None:
+                current = st.session_state.get("gm_player")
+                if not current or player_to_share_token(current) != player_to_share_token(selected_gm_player):
+                    _open_gm_player(selected_gm_player)
+                    st.rerun()
         else:
-            st.warning("balldontlie looks slow or unavailable right now.")
-            st.caption(f"{balldontlie_health.get('error_type', 'Error')}: {balldontlie_health.get('message', 'Unknown error')}")
+            gm_name = st.text_input("Set focal player", key="gm_player_search_name")
+            gm_live_suggestions = []
+            if gm_name and len(gm_name.strip()) >= 2:
+                try:
+                    gm_live_suggestions = search_players(gm_name.strip())[:8]
+                except Exception:
+                    gm_live_suggestions = []
+            if gm_live_suggestions:
+                st.caption("Live matches")
+                for idx, player in enumerate(gm_live_suggestions[:6]):
+                    label = player["full_name"]
+                    meta = []
+                    if player.get("position"):
+                        meta.append(player["position"])
+                    if player.get("team_name"):
+                        meta.append(player["team_name"])
+                    meta_text = f" ({' • '.join(meta)})" if meta else ""
+                    if st.button(f"{label}{meta_text}", key=f"gm_live_match_{idx}", use_container_width=True):
+                        _open_gm_player(player)
+                        st.rerun()
+        if st.session_state.get("gm_player"):
+            st.caption(f"Current focal player: {st.session_state['gm_player'].get('full_name', 'Selected Player')}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("Use in Player Explorer", use_container_width=True, key="gm_open_in_player_explorer"):
+                    _open_player(st.session_state["gm_player"])
+                    st.session_state["app_section"] = "🏀 Player Explorer"
+                    st.rerun()
+            with col_b:
+                if st.button("Clear Focal Player", use_container_width=True, key="gm_clear_focal_player"):
+                    st.session_state["gm_player"] = None
+                    st.session_state["player_report_mode"] = None
+                    st.rerun()
 
-if search_clicked:
+search_clicked = locals().get("search_clicked", False)
+nl_search_clicked = locals().get("nl_search_clicked", False)
+custom_search_clicked = locals().get("custom_search_clicked", False)
+name = locals().get("name", "")
+nl_query = locals().get("nl_query", "")
+
+if app_section == "🏀 Player Explorer" and search_clicked:
     try:
         found = search_players(name) if name else []
     except Exception as e:
@@ -545,7 +646,7 @@ if search_clicked:
         st.session_state["player"] = None
         st.session_state["search_feedback"] = None
 
-if nl_search_clicked:
+if app_section == "🏀 Player Explorer" and nl_search_clicked:
     results_df, meta = find_players_by_natural_language(
         nl_query,
         season=None,
@@ -562,7 +663,7 @@ if nl_search_clicked:
         st.session_state["matches"] = []
         st.session_state["search_feedback"] = None
 
-if custom_search_clicked:
+if app_section == "🏀 Player Explorer" and custom_search_clicked:
     custom_filters = []
     for idx in range(int(st.session_state.get("custom_stat_rule_count", 3))):
         metric = st.session_state.get(f"custom_stat_metric_{idx}")
@@ -602,7 +703,7 @@ if custom_search_clicked:
         st.session_state["nl_meta"] = None
 
 feedback = st.session_state.get("search_feedback")
-if feedback:
+if app_section == "🏀 Player Explorer" and feedback:
     if feedback.get("kind") == "error":
         st.error(feedback.get("message", "No player was returned for that search."))
     else:
@@ -610,7 +711,7 @@ if feedback:
 
 nl_results = st.session_state.get("nl_results")
 nl_meta = st.session_state.get("nl_meta") or {}
-if nl_results is not None and not st.session_state.get("player"):
+if app_section == "🏀 Player Explorer" and nl_results is not None and not st.session_state.get("player"):
     st.subheader("Natural Language Player Search")
     if nl_meta.get("summary"):
         st.caption(
@@ -658,7 +759,7 @@ if nl_results is not None and not st.session_state.get("player"):
 
 custom_results = st.session_state.get("custom_results")
 custom_meta = st.session_state.get("custom_meta") or {}
-if custom_results is not None and not st.session_state.get("player"):
+if app_section == "🏀 Player Explorer" and custom_results is not None and not st.session_state.get("player"):
     st.subheader("Custom Stat Finder")
     if custom_meta.get("summary"):
         st.caption(
@@ -699,7 +800,7 @@ if custom_results is not None and not st.session_state.get("player"):
                     st.session_state["custom_meta"] = None
                     st.rerun()
 
-if st.session_state["matches"]:
+if app_section == "🏀 Player Explorer" and st.session_state["matches"]:
     st.write("Multiple players found with that name:")
     opts = {f"{p['full_name']} (ID: {p['id']})": p for p in st.session_state["matches"]}
     choice = st.radio("Select a player:", ["⬇️ Pick a player"] + list(opts.keys()), index=0, key="player_selection_radio")
@@ -711,7 +812,25 @@ if st.session_state["matches"]:
         st.session_state["nl_meta"] = None
         st.session_state["active_view"] = "📊 Stats"
 
-if st.session_state["player"]:
+if app_section == "🏗 GM / Team Building":
+    if st.session_state.get("player_report_mode") == "trade-value":
+        render_player_trade_value_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if st.session_state.get("player_report_mode") == "co-star":
+        render_player_co_star_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if st.session_state.get("player_report_mode") == "roster-fit":
+        render_player_roster_fit_page()
+        _sync_share_state_to_url()
+        st.stop()
+    if st.session_state.get("player_report_mode") == "trade-package":
+        render_player_trade_package_page()
+        _sync_share_state_to_url()
+        st.stop()
+    render_gm_workspace(model)
+elif st.session_state["player"]:
     if (
         st.session_state.get("active_view") == "🤝 Compare Players"
         and st.session_state.get("compare_report_mode") == "scouting"
@@ -810,7 +929,6 @@ if st.session_state["player"]:
         render_player_contract_value_page()
         _sync_share_state_to_url()
         st.stop()
-
     view = st.radio(
         "View",
         ["📋 Player Info", "📊 Stats", "🧩 Fantasy", "💸 Value & Props", "🤝 Compare Players"],
@@ -829,6 +947,7 @@ if st.session_state["player"]:
     else:
         render_compare_tab(st.session_state["player"], model)
 else:
-    st.info("Use the sidebar to search for a player.")
+    if app_section == "🏀 Player Explorer":
+        st.info("Use the sidebar to search for a player.")
 
 _sync_share_state_to_url()
