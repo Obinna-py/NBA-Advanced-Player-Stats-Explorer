@@ -43,9 +43,27 @@ _COMPARE_SEARCHBOX_STYLE_OVERRIDES = {
             "minHeight": 46,
             "boxShadow": "none",
         },
-        "input": {"color": "#f9fafb", "fontSize": 15},
-        "placeholder": {"color": "rgba(255,255,255,0.45)", "fontSize": 14},
-        "singleValue": {"color": "#f9fafb", "fontSize": 15, "fontWeight": 500},
+        "input": {
+            "color": "#f9fafb",
+            "fontSize": 15,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontWeight": 500,
+            "letterSpacing": "-0.01em",
+        },
+        "placeholder": {
+            "color": "rgba(255,255,255,0.45)",
+            "fontSize": 14,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontWeight": 500,
+            "letterSpacing": "-0.01em",
+        },
+        "singleValue": {
+            "color": "#f9fafb",
+            "fontSize": 15,
+            "fontWeight": 500,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "letterSpacing": "-0.01em",
+        },
         "menu": {
             "backgroundColor": "#0f172a",
             "borderRadius": 12,
@@ -54,8 +72,23 @@ _COMPARE_SEARCHBOX_STYLE_OVERRIDES = {
             "boxShadow": "0 18px 40px rgba(0,0,0,0.35)",
         },
         "menuList": {"backgroundColor": "#0f172a", "paddingTop": 6, "paddingBottom": 6},
-        "option": {"fontSize": 14, "paddingTop": 10, "paddingBottom": 10, "paddingLeft": 12, "paddingRight": 12},
-        "noOptionsMessage": {"color": "rgba(255,255,255,0.55)", "fontSize": 13},
+        "option": {
+            "fontSize": 14,
+            "paddingTop": 10,
+            "paddingBottom": 10,
+            "paddingLeft": 12,
+            "paddingRight": 12,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontWeight": 500,
+            "letterSpacing": "-0.01em",
+        },
+        "noOptionsMessage": {
+            "color": "rgba(255,255,255,0.55)",
+            "fontSize": 13,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontWeight": 500,
+            "letterSpacing": "-0.01em",
+        },
     },
     "dropdown": {"fill": "#9ca3af", "width": 22, "height": 22, "rotate": True},
     "clear": {"width": 18, "height": 18, "icon": "cross", "clearable": "always"},
@@ -234,6 +267,20 @@ def _inject_sticky_ai_rail_css(anchor_class: str) -> None:
         div[data-testid="column"]:has(.{anchor_class}) .stButton > button {{
           width: 100%;
         }}
+        @media (max-width: 1180px) {{
+          div[data-testid="column"]:has(.{anchor_class}) {{
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            border-left: none;
+            border-top: 1px solid rgba(127,127,127,0.18);
+            box-shadow: none;
+            padding: 1rem 0 0 0;
+            margin-top: 1rem;
+            background: transparent;
+          }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -253,6 +300,259 @@ def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) 
         ),
         unsafe_allow_html=True,
     )
+
+
+def _inject_compare_redesign_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .compare-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 30%),
+            radial-gradient(circle at left center, rgba(59, 130, 246, 0.12), transparent 26%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .compare-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .compare-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.6rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .compare-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.8rem;
+        }
+        .compare-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .compare-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .compare-os-section {
+          margin: 1.35rem 0 0.8rem;
+        }
+        .compare-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .compare-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .compare-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 900px;
+          margin-top: 0.45rem;
+        }
+        .compare-os-player-card {
+          background: linear-gradient(180deg, var(--secondary-background-color), var(--background-color));
+          border: 1px solid rgba(99, 116, 156, 0.18);
+          border-radius: 20px;
+          padding: 0.95rem 1rem 1rem;
+          min-height: 255px;
+        }
+        .compare-os-player-role {
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          font-size: 0.66rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .compare-os-player-name {
+          color: var(--text-color);
+          font-size: 1.02rem;
+          font-weight: 720;
+          line-height: 1.25;
+          margin-top: 0.75rem;
+        }
+        .compare-os-player-meta {
+          color: var(--text-color);
+          opacity: 0.7;
+          font-size: 0.84rem;
+          line-height: 1.5;
+          margin-top: 0.35rem;
+        }
+        @media (max-width: 900px) {
+          .compare-os-hero {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .compare-os-title {
+            font-size: 1.6rem;
+          }
+          .compare-os-subtitle,
+          .compare-os-section-copy {
+            font-size: 0.9rem;
+          }
+          .compare-os-player-card {
+            min-height: 0;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_compare_workspace_hero(compare_pool: list[dict], compare_view: str | None = None) -> None:
+    compare_names = [p.get("full_name", "Player") for p in compare_pool]
+    if len(compare_names) >= 2:
+        subtitle = (
+            "A premium side-by-side decision workspace for stats, archetypes, verdicts, era context, and AI-assisted basketball analysis."
+        )
+    else:
+        subtitle = (
+            "Build a side-by-side player lab for stats, archetypes, verdicts, era context, and AI-assisted basketball analysis."
+        )
+
+    badges = [
+        f"Players: {len(compare_pool)}",
+        f"View: {compare_view or 'Set up comparison'}",
+    ]
+    if compare_names:
+        badges.append(f"Primary: {compare_names[0]}")
+    if len(compare_names) >= 2:
+        badges.append("Mode: Side-by-side compare")
+
+    badges_html = "".join(f'<span class="compare-os-badge">{html.escape(item)}</span>' for item in badges)
+    title = "Compare Players" if len(compare_names) < 2 else " vs ".join(compare_names[:3]) + (" ..." if len(compare_names) > 3 else "")
+
+    st.markdown(
+        f"""
+        <div class="compare-os-hero">
+          <div class="compare-os-kicker">Comparison Lab</div>
+          <h1 class="compare-os-title">{html.escape(title)}</h1>
+          <div class="compare-os-subtitle">{html.escape(subtitle)}</div>
+          <div class="compare-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_compare_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="compare-os-section">
+          <div class="compare-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="compare-os-section-title">{html.escape(title)}</div>
+          <div class="compare-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_compare_control_shell(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="compare-os-player-card" style="min-height:auto; padding: 1rem 1.05rem 0.8rem;">
+          <div class="compare-os-section-kicker" style="margin-bottom:0.32rem;">{html.escape(kicker)}</div>
+          <div class="compare-os-section-title" style="font-size:1.05rem;">{html.escape(title)}</div>
+          <div class="compare-os-section-copy" style="font-size:0.88rem; margin-top:0.28rem;">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def style_plotly_figure(
+    fig,
+    *,
+    height: int | None = None,
+    margin: dict | None = None,
+    legend_title: str | None = "",
+    xaxis_title: str | None = None,
+    yaxis_title: str | None = None,
+) -> None:
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(15, 23, 42, 0.22)",
+        font=dict(color="#dbe4f0", family="Inter, SF Pro Display, Segoe UI, sans-serif"),
+        title=dict(font=dict(size=18, color="#f8fafc"), x=0.02),
+        margin=margin or dict(l=18, r=18, t=54, b=18),
+        legend=dict(
+            title=dict(text=legend_title or ""),
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(15, 23, 42, 0.0)",
+        ),
+    )
+    if height is not None:
+        fig.update_layout(height=height)
+    if xaxis_title is not None:
+        fig.update_xaxes(title=xaxis_title)
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="rgba(148, 163, 184, 0.12)",
+        zeroline=False,
+        linecolor="rgba(148, 163, 184, 0.18)",
+        tickfont=dict(color="#cbd5e1"),
+        title_font=dict(color="#cbd5e1"),
+    )
+    if yaxis_title is not None:
+        fig.update_yaxes(title=yaxis_title)
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(148, 163, 184, 0.12)",
+        zeroline=False,
+        linecolor="rgba(148, 163, 184, 0.18)",
+        tickfont=dict(color="#cbd5e1"),
+        title_font=dict(color="#cbd5e1"),
+    )
+    if hasattr(fig.layout, "polar") and fig.layout.polar:
+        fig.update_layout(
+            polar=dict(
+                bgcolor="rgba(15, 23, 42, 0.12)",
+                angularaxis=dict(gridcolor="rgba(148, 163, 184, 0.16)", linecolor="rgba(148, 163, 184, 0.16)", tickfont=dict(color="#cbd5e1")),
+                radialaxis=dict(gridcolor="rgba(148, 163, 184, 0.16)", linecolor="rgba(148, 163, 184, 0.16)", tickfont=dict(color="#cbd5e1")),
+            )
+        )
 
 
 # -------------------------
@@ -1572,8 +1872,8 @@ def _render_visual_overlap_charts(player_frames: list[dict], scope_label: str) -
             title="Player DNA Overlap",
             polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
             showlegend=True,
-            margin=dict(l=30, r=30, t=50, b=30),
         )
+        style_plotly_figure(radar_fig, height=430, legend_title="Player")
         st.plotly_chart(radar_fig, use_container_width=True)
 
     with bottom_col:
@@ -1585,7 +1885,7 @@ def _render_visual_overlap_charts(player_frames: list[dict], scope_label: str) -
             barmode="group",
             title="Core Stat Snapshot",
         )
-        overlap_fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), legend_title="Player")
+        style_plotly_figure(overlap_fig, height=420, legend_title="Player", xaxis_title="Metric", yaxis_title="Value")
         st.plotly_chart(overlap_fig, use_container_width=True)
 
 
@@ -1695,7 +1995,7 @@ def _render_shot_profile_compare(player_frames: list[dict], scope_label: str) ->
             barmode="group",
             title="Offensive Style Snapshot",
         )
-        fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), legend_title="Player")
+        style_plotly_figure(fig, height=420, legend_title="Player", xaxis_title="Metric", yaxis_title="Value")
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -2125,7 +2425,7 @@ def render_compare_ai_chat_page(model) -> None:
 # Main render function
 # -------------------------
 def render_compare_tab(primary_player: dict, model=None):
-    st.subheader("Compare Players")
+    _inject_compare_redesign_css()
     max_total_players = 5
     max_added_players = max_total_players - 1
 
@@ -2140,17 +2440,23 @@ def render_compare_tab(primary_player: dict, model=None):
     compare_pool = _dedupe_players([primary_player] + st.session_state["compare_players"])[:max_total_players]
     compare_pool_is_full = len(compare_pool) >= max_total_players
 
+    _render_compare_workspace_hero(compare_pool)
+    _render_compare_section_intro(
+        "Build Compare Pool",
+        "Choose the players you want in the lab",
+        "Add players from anywhere in the league, keep the pool tight, and then switch the comparison view to decide whether you want latest season, peak, prime, or full-career framing.",
+    )
+
     if st_searchbox is not None:
         if compare_pool_is_full:
-            st.caption("Add another player's name to compare")
             st.warning(f"You've reached the max comparison size of {max_total_players} total players. Remove a player to add someone new.")
             st.session_state.pop("compare_player_searchbox", None)
             st.session_state.pop("_last_compare_search_pick", None)
         else:
             selected_compare_player = st_searchbox(
                 _compare_player_suggestions,
-                label="Add another player's name to compare",
-                placeholder="Start typing a player name...",
+                label="",
+                placeholder="Add a player to the comparison...",
                 key="compare_player_searchbox",
                 clear_on_submit=False,
                 edit_after_submit="option",
@@ -2203,9 +2509,11 @@ def render_compare_tab(primary_player: dict, model=None):
         st.info("Add at least one more player to start the comparison.")
         return
 
-    st.success("Comparing " + " vs ".join([f"**{p['full_name']}**" for p in compare_pool]))
-
-    st.markdown("**Selected players**")
+    _render_compare_section_intro(
+        "Selected Players",
+        "Active comparison pool",
+        "These are the players currently loaded into the workspace. Remove anyone you do not want in the pool before running deeper compare tools and AI analysis.",
+    )
     remove_cols = st.columns(len(compare_pool))
     for idx, player in enumerate(compare_pool):
         with remove_cols[idx]:
@@ -2223,22 +2531,29 @@ def render_compare_tab(primary_player: dict, model=None):
     card_cols = st.columns(len(compare_pool))
     for col, player in zip(card_cols, compare_pool):
         with col:
+            st.markdown('<div class="compare-os-player-card">', unsafe_allow_html=True)
+            role_label = "Primary player" if _player_key(player) == _player_key(primary_player) else "Compare player"
+            st.markdown(f'<div class="compare-os-player-role">{html.escape(role_label)}</div>', unsafe_allow_html=True)
             headshot = get_nba_headshot_url(
                 player["id"],
                 player_name=player.get("full_name"),
                 player_source=player.get("source"),
             )
             _render_headshot_image(headshot, 150, player.get("full_name", "Player"))
-            st.markdown(f"**{player['full_name']}**")
+            st.markdown(f'<div class="compare-os-player-name">{html.escape(player["full_name"])}</div>', unsafe_allow_html=True)
             try:
                 info = get_player_info(
                     player["id"],
                     player_name=player.get("full_name"),
                     player_source=player.get("source"),
                 )
-                st.caption(f"{info.loc[0, 'TEAM_NAME']} • {info.loc[0, 'POSITION']}")
+                st.markdown(
+                    f'<div class="compare-os-player-meta">{html.escape(str(info.loc[0, "TEAM_NAME"]))} • {html.escape(str(info.loc[0, "POSITION"]))}</div>',
+                    unsafe_allow_html=True,
+                )
             except Exception:
-                st.caption("Player bio unavailable right now")
+                st.markdown('<div class="compare-os-player-meta">Player bio unavailable right now</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     player_frames = []
     phase_store = st.session_state.setdefault("career_phases_by_player", {})
@@ -2312,11 +2627,17 @@ def render_compare_tab(primary_player: dict, model=None):
     preferred_order = ["Latest Season", "Peak Season", "Prime", "Full Career", "Early Career", "Late Career"]
     compare_view_options = [label for label in preferred_order if label in compare_view_options]
 
+    _render_compare_control_shell(
+        "Comparison Window",
+        "Choose the comparison lens",
+        "Switch the workspace between latest season, peak, prime, full-career, or phase-based windows before reading the tables, charts, and verdicts.",
+    )
     selected_compare_view = st.selectbox(
         "Comparison view",
         compare_view_options,
         index=0,
         key="compare_summary_view",
+        label_visibility="collapsed",
     )
     compare_view_captions = {
         "Latest Season": "Comparing each player's latest available season.",
@@ -2389,8 +2710,11 @@ def render_compare_tab(primary_player: dict, model=None):
         ai_col = None
 
     with main_col:
-        st.subheader("📊 Advanced Stats")
-        render_stat_text(f"Showing the selected compare view: {selected_compare_view}.", small=True)
+        _render_compare_section_intro(
+            "Core Comparison",
+            "Advanced Stats",
+            f"Showing the selected compare view: {selected_compare_view}. Read the underlying tables first, then work down into archetypes, overlap charts, verdicts, and AI tools.",
+        )
         tabs = st.tabs([item["name"] for item in player_frames])
         for tab, item in zip(tabs, player_frames):
             with tab:
@@ -2400,6 +2724,11 @@ def render_compare_tab(primary_player: dict, model=None):
 
         _render_archetype_compare_view(player_frames, selected_compare_view)
 
+        _render_compare_control_shell(
+            "Chart Controls",
+            "Shape the comparison context",
+            "Align by season, career year, or age, and then pick the stat lens you want the overlap charts to follow.",
+        )
         align_mode = st.radio(
             "Align seasons by",
             ["Calendar (overlap only)", "Career year", "Age"],
@@ -2496,14 +2825,13 @@ def render_compare_tab(primary_player: dict, model=None):
             x_label = {"Calendar (overlap only)": "Season", "Career year": "Career Year", "Age": "Age (approx)"}[align_mode]
             title = f"{stat_choice}{label_suffix} — {align_mode}"
             fig = px.line(aligned, x="X", y="Value", color="Player", markers=True, title=title)
-            fig.update_layout(xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}", legend_title="Player")
+            style_plotly_figure(fig, height=430, legend_title="Player", xaxis_title=x_label, yaxis_title=f"{stat_choice}{label_suffix}")
             st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### 🕰️ Era Compare")
-        render_stat_text(
-            "Compare players against the league they actually played in. A score of 100 means league average for that season, "
-            "while numbers above 100 mean the player beat his era on that metric.",
-            small=True,
+        _render_compare_section_intro(
+            "Era Context",
+            "Era Compare",
+            "Compare players against the league they actually played in. A score of 100 means league average for that season, while numbers above 100 mean the player beat his era on that metric.",
         )
         era_metric = st.selectbox(
             "Era-adjusted metric",
@@ -2525,11 +2853,7 @@ def render_compare_tab(primary_player: dict, model=None):
                 title=f"{era_metric}+ Era Compare",
             )
             era_fig.add_hline(y=100, line_dash="dash", line_color="rgba(255,255,255,0.5)", annotation_text="League average")
-            era_fig.update_layout(
-                xaxis_title=era_x_label,
-                yaxis_title=f"{era_metric}+",
-                legend_title="Player",
-            )
+            style_plotly_figure(era_fig, height=430, legend_title="Player", xaxis_title=era_x_label, yaxis_title=f"{era_metric}+")
             st.plotly_chart(era_fig, use_container_width=True)
             if not era_snapshot.empty:
                 render_html_table(
@@ -2648,6 +2972,7 @@ def render_compare_tab(primary_player: dict, model=None):
                     fig = px.bar(plot_df.melt(id_vars=["Stat"], var_name="Player", value_name="Value"),
                                  x="Stat", y="Value", color="Player", barmode="group",
                                  title=f"Head-to-Head Averages — {h2h_season_type}")
+                    style_plotly_figure(fig, height=420, legend_title="Player", xaxis_title="Stat", yaxis_title="Value")
                     st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Head-to-head is available when exactly 2 players are selected.")
@@ -2655,8 +2980,11 @@ def render_compare_tab(primary_player: dict, model=None):
     if ai_col is not None:
         with ai_col:
             st.markdown('<div class="sticky-compare-ai-rail"></div>', unsafe_allow_html=True)
-            st.markdown("### 🧠 AI Tools")
-            st.caption("Open or close each panel as needed.")
+            _render_compare_section_intro(
+                "AI Workspace",
+                "AI Tools",
+                "Dedicated compare pages, debates, scouting reports, and follow-up analysis live here without cluttering the main comparison flow.",
+            )
 
             with st.expander("Side-by-Side AI Scouting Report", expanded=False):
                 if model:

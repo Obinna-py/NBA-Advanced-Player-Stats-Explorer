@@ -1,3 +1,4 @@
+import html
 import pandas as pd
 import streamlit as st
 
@@ -26,8 +27,144 @@ from ui_player import (
 from ui_compare import render_stat_text
 
 
+def _inject_value_page_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .value-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(34, 197, 94, 0.14), transparent 30%),
+            radial-gradient(circle at left center, rgba(59, 130, 246, 0.12), transparent 26%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .value-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .value-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.6rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .value-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.8rem;
+        }
+        .value-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .value-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .value-os-section {
+          margin: 1.35rem 0 0.8rem;
+        }
+        .value-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .value-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .value-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 900px;
+          margin-top: 0.45rem;
+        }
+        @media (max-width: 900px) {
+          .value-os-hero {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .value-os-title {
+            font-size: 1.6rem;
+          }
+          .value-os-subtitle,
+          .value-os-section-copy {
+            font-size: 0.9rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_value_hero(player_name: str, latest_team_record: str | None, contract_snapshot: dict, age_value: int | None) -> None:
+    badges = [
+        f"Age: {age_value}" if age_value is not None else "Age: —",
+        f"Record: {latest_team_record}" if latest_team_record else "Record unavailable",
+        f"Cap Hit: {_fmt_money(contract_snapshot.get('cap_hit'))}",
+        f"Guaranteed: {_fmt_money(contract_snapshot.get('total_guaranteed'))}",
+    ]
+    badges_html = "".join(f'<span class="value-os-badge">{html.escape(item)}</span>' for item in badges)
+    st.markdown(
+        f"""
+        <div class="value-os-hero">
+          <div class="value-os-kicker">Value & Props Workspace</div>
+          <h1 class="value-os-title">{html.escape(player_name)}</h1>
+          <div class="value-os-subtitle">Contract context, prop research, volatility, trend analysis, and value tools in one focused decision workspace.</div>
+          <div class="value-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_value_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="value-os-section">
+          <div class="value-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="value-os-section-title">{html.escape(title)}</div>
+          <div class="value-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def value_tab(player, model):
-    st.subheader("Value & Props")
+    _inject_value_page_css()
 
     raw_pergame = get_player_career(
         player["id"],
@@ -76,21 +213,25 @@ def value_tab(player, model):
     )
 
     latest = adv.iloc[-1] if adv is not None and not adv.empty else (raw_pergame.iloc[-1] if raw_pergame is not None and not raw_pergame.empty else pd.Series(dtype=object))
+    latest_team_record = latest.get("TEAM_RECORD")
+    birthdate = get_player_birthdate(
+        player["id"],
+        player_name=player.get("full_name"),
+        player_source=player.get("source"),
+    )
+    age_value = _age_from_birthdate(birthdate) if birthdate else None
+    _render_value_hero(player.get("full_name", "Player"), latest_team_record if pd.notna(latest_team_record) and latest_team_record else None, contract_snapshot, age_value)
+
     hero_col, stats_col = st.columns([1, 3])
     with hero_col:
         _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
         st.caption(player.get("full_name", ""))
     with stats_col:
-        render_stat_text("Contract context, value analysis, and prop research in one focused workspace.", small=True)
-        latest_team_record = latest.get("TEAM_RECORD")
-        if pd.notna(latest_team_record) and latest_team_record:
-            render_stat_text(f"Current team record: {latest_team_record}", small=True)
-        birthdate = get_player_birthdate(
-            player["id"],
-            player_name=player.get("full_name"),
-            player_source=player.get("source"),
+        _render_value_section_intro(
+            "Value Snapshot",
+            "Contract & Risk Overview",
+            "A fast read on age, salary burden, guaranteed money, and how this player’s current financial profile sits next to the on-court context.",
         )
-        age_value = _age_from_birthdate(birthdate) if birthdate else None
         cards = [
             ("Age", str(age_value) if age_value is not None else "—"),
             ("Cap Hit", _fmt_money(contract_snapshot.get("cap_hit"))),
@@ -120,18 +261,31 @@ def value_tab(player, model):
 
     with main_col:
         if contract_df is not None and not contract_df.empty:
+            _render_value_section_intro(
+                "Contract Context",
+                "Contract Snapshot",
+                "Use this section to read the headline contract structure before judging whether the salary slot matches the player’s value and team-building impact.",
+            )
             _render_contract_snapshot_section(contract_snapshot)
         else:
             st.info("Contract data is unavailable for this player right now.")
 
         latest_season_id = str(adv.iloc[-1].get("SEASON_ID", "")) if adv is not None and not adv.empty and "SEASON_ID" in adv.columns else ""
+        _render_value_section_intro(
+            "Prop Research",
+            "Prop Research Dashboard",
+            "Study hit rates, consistency, trend strength, and teammate splits before making a line-based read on the player.",
+        )
         _render_prop_context_dashboard(player, latest_season_id)
 
     if ai_col is not None:
         with ai_col:
             st.markdown('<div class="sticky-value-ai-rail"></div>', unsafe_allow_html=True)
-            st.markdown("### 🧠 AI Tools")
-            st.caption("Focused tools for contract and value context.")
+            _render_value_section_intro(
+                "AI Workspace",
+                "AI Tools",
+                "Dedicated contract and value analysis lives here so the main value page stays focused on the raw financial and prop context.",
+            )
 
             with st.expander("Contract Value Analyzer", expanded=False):
                 if model and contract_df is not None and not contract_df.empty:

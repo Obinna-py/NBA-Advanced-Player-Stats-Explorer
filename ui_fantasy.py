@@ -1,3 +1,4 @@
+import html
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -266,8 +267,144 @@ def render_player_rest_of_season_page() -> None:
         st.info("No rest-of-season analysis is available right now. Generate one from the Fantasy page first.")
 
 
+def _inject_fantasy_page_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .fantasy-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(168, 85, 247, 0.16), transparent 30%),
+            radial-gradient(circle at left center, rgba(59, 130, 246, 0.12), transparent 26%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .fantasy-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .fantasy-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.6rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .fantasy-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.8rem;
+        }
+        .fantasy-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .fantasy-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .fantasy-os-section {
+          margin: 1.35rem 0 0.8rem;
+        }
+        .fantasy-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .fantasy-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .fantasy-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 900px;
+          margin-top: 0.45rem;
+        }
+        @media (max-width: 900px) {
+          .fantasy-os-hero {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .fantasy-os-title {
+            font-size: 1.6rem;
+          }
+          .fantasy-os-subtitle,
+          .fantasy-os-section-copy {
+            font-size: 0.9rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_fantasy_hero(player_name: str, points_value: float | None, points_tier: str, ros_label: str, team_record: str | None) -> None:
+    badges = [
+        f"Fantasy Pts: {points_value:.1f}" if points_value is not None else "Fantasy Pts: —",
+        f"Tier: {points_tier}",
+        f"ROS: {ros_label or '—'}",
+        f"Record: {team_record}" if team_record else "Record unavailable",
+    ]
+    badges_html = "".join(f'<span class="fantasy-os-badge">{html.escape(item)}</span>' for item in badges)
+    st.markdown(
+        f"""
+        <div class="fantasy-os-hero">
+          <div class="fantasy-os-kicker">Fantasy Workspace</div>
+          <h1 class="fantasy-os-title">{html.escape(player_name)}</h1>
+          <div class="fantasy-os-subtitle">Fantasy snapshot, category impact, buy-low or sell-high context, and rest-of-season guidance in one focused roster-management workspace.</div>
+          <div class="fantasy-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_fantasy_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="fantasy-os-section">
+          <div class="fantasy-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="fantasy-os-section-title">{html.escape(title)}</div>
+          <div class="fantasy-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def fantasy_tab(player: dict, model) -> None:
-    st.subheader("Fantasy")
+    _inject_fantasy_page_css()
     raw_pergame = get_player_career(
         player["id"],
         per_mode="PerGame",
@@ -335,16 +472,25 @@ def fantasy_tab(player: dict, model) -> None:
         player_name=player.get("full_name"),
         player_source=player.get("source"),
     )
+    latest_team_record = latest.get("TEAM_RECORD")
+    _render_fantasy_hero(
+        player.get("full_name", "Player"),
+        points_value,
+        points_tier,
+        ros.get("label", "—"),
+        latest_team_record if pd.notna(latest_team_record) and str(latest_team_record).strip() else None,
+    )
 
     hero_col, stats_col = st.columns([1, 3])
     with hero_col:
         _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
         st.caption(player.get("full_name", ""))
     with stats_col:
-        render_stat_text("Fantasy snapshot, category impact, and actionable roster guidance in one workspace.", small=True)
-        latest_team_record = latest.get("TEAM_RECORD")
-        if pd.notna(latest_team_record) and str(latest_team_record).strip():
-            render_stat_text(f"Current team record: {latest.get('TEAM_RECORD')}", small=True)
+        _render_fantasy_section_intro(
+            "Fantasy Snapshot",
+            "Roster Value Snapshot",
+            "A fast read on fantasy scoring value, tier, and rest-of-season direction before you dig into categories or roster actions.",
+        )
         _render_hover_stat_cards(
             [
                 ("Age", str(age_value) if age_value is not None else "—"),
@@ -375,7 +521,11 @@ def fantasy_tab(player: dict, model) -> None:
         ai_col = None
 
     with main_col:
-        st.markdown("### 🧾 Fantasy Snapshot")
+        _render_fantasy_section_intro(
+            "Overview",
+            "Fantasy Snapshot",
+            "The quickest high-level read on points-league value, category strength, and whether the player looks like a buy, sell, or hold.",
+        )
         summary_cols = st.columns(4)
         snapshot_items = [
             ("Points League Value", f"{points_value:.1f}" if points_value is not None else "—"),
@@ -388,7 +538,11 @@ def fantasy_tab(player: dict, model) -> None:
                 st.metric(label, value)
         render_stat_text(bs_hold.get("reason", "No fantasy recommendation available."), small=True)
 
-        st.markdown("### 📊 Category Profile")
+        _render_fantasy_section_intro(
+            "Category Context",
+            "Category Profile",
+            "See where the player helps or hurts across fantasy categories, with percentile context to make strengths and weaknesses easier to read.",
+        )
         if profile_df is not None and not profile_df.empty:
             render_stat_text(
                 f"Main category strengths: {', '.join(strengths) if strengths else '—'}. "
@@ -400,14 +554,22 @@ def fantasy_tab(player: dict, model) -> None:
         else:
             st.info("Category profile is unavailable right now.")
 
-        st.markdown("### 🔄 Buy Low / Sell High / Hold")
+        _render_fantasy_section_intro(
+            "Decision Layer",
+            "Buy Low / Sell High / Hold",
+            "A practical roster-management lens based on recent trend versus season baseline, category quality, and fantasy role stability.",
+        )
         buy_cols = st.columns([1.2, 3])
         with buy_cols[0]:
             st.metric("Verdict", bs_hold.get("label", "—"))
         with buy_cols[1]:
             render_stat_text(bs_hold.get("reason", "No clear fantasy verdict."), small=False)
 
-        st.markdown("### 📈 Rest-of-Season Outlook")
+        _render_fantasy_section_intro(
+            "Projection Layer",
+            "Rest-of-Season Outlook",
+            "The short-term forecast on role stability, category carry, and whether the fantasy stock is rising, steady, or under pressure.",
+        )
         ros_cols = st.columns([1.2, 3])
         with ros_cols[0]:
             st.metric("ROS Label", ros.get("label", "—"))
@@ -419,8 +581,11 @@ def fantasy_tab(player: dict, model) -> None:
     if ai_col is not None:
         with ai_col:
             st.markdown('<div class="sticky-fantasy-ai-rail"></div>', unsafe_allow_html=True)
-            st.markdown("### 🧠 Fantasy AI")
-            st.caption("Dedicated fantasy tools and deeper recommendation pages.")
+            _render_fantasy_section_intro(
+                "AI Workspace",
+                "Fantasy AI",
+                "Dedicated fantasy pages live here so the main fantasy workspace stays centered on the raw roster context and category signal.",
+            )
 
             with st.expander("Buy Low / Sell High / Hold Analyzer", expanded=False):
                 if model:

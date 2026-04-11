@@ -13,7 +13,7 @@ from fetch import get_player_career, get_player_info, get_player_birthdate, get_
 from metrics import compute_full_advanced_stats, generate_player_summary, compact_player_context, add_per_game_columns, metric_public_cols, build_ai_phase_table, build_ai_stat_packet, compute_player_percentile_context, detect_player_archetype, find_similar_players, compute_impact_index
 from ideas import cached_ai_question_ideas, presets, ai_detect_career_phases
 from utils import abbrev, public_cols
-from ui_compare import render_html_table, _make_readable_stats_table, STAT_TOOLTIPS, _label_with_tooltip, render_stat_text, _inject_sticky_ai_rail_css
+from ui_compare import render_html_table, _make_readable_stats_table, STAT_TOOLTIPS, _label_with_tooltip, render_stat_text, _inject_sticky_ai_rail_css, style_plotly_figure
 
 
 def _friendly_ai_error_message(error: Exception) -> str:
@@ -116,6 +116,414 @@ def _render_headshot_image(headshot_url: str | None, width: int, alt_text: str) 
         ),
         unsafe_allow_html=True,
     )
+
+
+def _inject_stats_page_redesign_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .stats-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 32%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .stats-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .stats-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.65rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .stats-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 820px;
+          margin-top: 0.8rem;
+        }
+        .stats-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .stats-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .stats-os-view-shell {
+          padding: 1rem 1.05rem 0.6rem;
+          border-radius: 20px;
+          border: 1px solid rgba(99, 116, 156, 0.18);
+          background: linear-gradient(180deg, var(--secondary-background-color), var(--background-color));
+          margin-bottom: 1rem;
+        }
+        .stats-os-view-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.7rem;
+          color: rgba(148, 163, 184, 0.88);
+          font-weight: 700;
+          margin-bottom: 0.45rem;
+        }
+        .stats-os-view-title {
+          color: var(--text-color);
+          font-size: 1.02rem;
+          font-weight: 700;
+          margin-bottom: 0.16rem;
+        }
+        .stats-os-view-copy {
+          color: var(--text-color);
+          opacity: 0.72;
+          font-size: 0.9rem;
+          line-height: 1.55;
+        }
+        .stats-os-section {
+          margin: 1.4rem 0 0.8rem;
+        }
+        .stats-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .stats-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .stats-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.45rem;
+        }
+        @media (max-width: 900px) {
+          .stats-os-hero,
+          .stats-os-view-shell {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .stats-os-title {
+            font-size: 1.6rem;
+          }
+          .stats-os-subtitle,
+          .stats-os-section-copy,
+          .stats-os-view-copy {
+            font-size: 0.9rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_stats_workspace_hero(
+    player: dict,
+    summary_label: str | None,
+    summary_caption: str | None,
+    latest_row: pd.Series | dict | None,
+) -> None:
+    row = latest_row if latest_row is not None else {}
+    team_name = player.get("team_name") or row.get("TEAM") or player.get("team_abbreviation") or "NBA Team"
+    position = player.get("position") or row.get("POSITION") or "Position unavailable"
+    age_value = pd.to_numeric(row.get("AGE_APPROX"), errors="coerce")
+    team_record = row.get("TEAM_RECORD")
+
+    badges = [
+        f"Mode: {summary_label or 'Latest Season'}",
+        f"Team: {team_name}",
+        f"Position: {position}",
+    ]
+    if pd.notna(age_value):
+        badges.append(f"Age: {int(age_value)}")
+    if pd.notna(team_record) and str(team_record).strip():
+        badges.append(f"Record: {team_record}")
+
+    badges_html = "".join(f'<span class="stats-os-badge">{html.escape(item)}</span>' for item in badges)
+    subtitle = summary_caption or "A season-by-season intelligence view of the player's production, role, and league context."
+
+    st.markdown(
+        f"""
+        <div class="stats-os-hero">
+          <div class="stats-os-kicker">Player Intelligence</div>
+          <h1 class="stats-os-title">{html.escape(player.get("full_name", "Player"))}</h1>
+          <div class="stats-os-subtitle">{html.escape(subtitle)}</div>
+          <div class="stats-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_stats_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="stats-os-section">
+          <div class="stats-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="stats-os-section-title">{html.escape(title)}</div>
+          <div class="stats-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _inject_player_info_redesign_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .info-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 30%),
+            radial-gradient(circle at left center, rgba(59, 130, 246, 0.12), transparent 26%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .info-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .info-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.6rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .info-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.8rem;
+        }
+        .info-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .info-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .info-os-section {
+          margin: 1.35rem 0 0.8rem;
+        }
+        .info-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .info-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .info-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 900px;
+          margin-top: 0.45rem;
+        }
+        .info-os-panel {
+          background: linear-gradient(180deg, var(--secondary-background-color), var(--background-color));
+          border: 1px solid rgba(99, 116, 156, 0.18);
+          border-radius: 20px;
+          padding: 1rem 1.05rem;
+          min-height: 210px;
+        }
+        .info-os-panel-title {
+          color: var(--text-color);
+          font-size: 1rem;
+          font-weight: 720;
+          margin-bottom: 0.7rem;
+        }
+        .info-os-detail {
+          display: grid;
+          grid-template-columns: 104px 1fr;
+          gap: 0.75rem;
+          margin-bottom: 0.55rem;
+        }
+        .info-os-detail-label {
+          color: var(--text-color);
+          opacity: 0.58;
+          font-size: 0.8rem;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          font-weight: 700;
+        }
+        .info-os-detail-value {
+          color: var(--text-color);
+          font-size: 0.95rem;
+          line-height: 1.5;
+          font-weight: 540;
+          word-break: break-word;
+        }
+        @media (max-width: 900px) {
+          .info-os-hero {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .info-os-title {
+            font-size: 1.6rem;
+          }
+          .info-os-subtitle,
+          .info-os-section-copy {
+            font-size: 0.9rem;
+          }
+          .info-os-panel {
+            min-height: 0;
+          }
+          .info-os-detail {
+            grid-template-columns: 90px 1fr;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_player_info_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="info-os-section">
+          <div class="info-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="info-os-section-title">{html.escape(title)}</div>
+          <div class="info-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_player_info_workspace(
+    player_name: str,
+    headshot_url: str | None,
+    subtitle: str,
+    badges: list[str],
+    summary_cards: list[tuple[str, str]],
+    team_details: list[tuple[str, str]],
+    background_details: list[tuple[str, str]],
+    *,
+    team_logo_url: str | None = None,
+    college_logo_url: str | None = None,
+) -> None:
+    badges_html = "".join(f'<span class="info-os-badge">{html.escape(item)}</span>' for item in badges if item and item != "—")
+    st.markdown(
+        f"""
+        <div class="info-os-hero">
+          <div class="info-os-kicker">Player Identity</div>
+          <h1 class="info-os-title">{html.escape(player_name)}</h1>
+          <div class="info-os-subtitle">{html.escape(subtitle)}</div>
+          <div class="info-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    top_left, top_right = st.columns([1.05, 3.05], gap="large")
+    with top_left:
+        _render_headshot_image(headshot_url, 210, player_name)
+        if team_logo_url:
+            st.image(team_logo_url, width=110)
+        if college_logo_url:
+            st.image(college_logo_url, width=110)
+    with top_right:
+        _render_player_info_section_intro(
+            "Identity Snapshot",
+            "Core Bio",
+            "A cleaner read on the player's physical profile, role, team context, and basketball background.",
+        )
+        _render_hover_stat_cards(summary_cards, columns_per_row=4)
+
+    _render_player_info_section_intro(
+        "Background",
+        "Team & Bio Details",
+        "The contextual details that help place the player inside a roster, league, and development path.",
+    )
+    col1, col2 = st.columns(2, gap="large")
+
+    def _detail_panel(title: str, rows: list[tuple[str, str]], col) -> None:
+        with col:
+            panel = st.container(border=True)
+            with panel:
+                st.markdown(
+                    f'<div class="info-os-panel-title">{html.escape(title)}</div>',
+                    unsafe_allow_html=True,
+                )
+                for label, value in rows:
+                    row_left, row_right = st.columns([0.92, 1.5], gap="small")
+                    with row_left:
+                        st.markdown(
+                            f'<div class="info-os-detail-label">{html.escape(label)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with row_right:
+                        st.markdown(
+                            f'<div class="info-os-detail-value">{html.escape(value or "—")}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+    _detail_panel("Team Context", team_details, col1)
+    _detail_panel("Background Details", background_details, col2)
 
 
 def _player_scouting_report_prompt(player_name: str, pergame_df: pd.DataFrame, adv_df: pd.DataFrame) -> str:
@@ -588,6 +996,7 @@ def _add_age_column(df: pd.DataFrame, birth_year: int | None) -> pd.DataFrame:
     return out
 
 def info_tab(player):
+    _inject_player_info_redesign_css()
     if player.get("source") == "balldontlie":
         balldontlie_info_tab(player)
         return
@@ -595,7 +1004,11 @@ def info_tab(player):
     try:
         info = get_player_info(player['id'], player_name=player.get("full_name"), player_source=player.get("source"))
     except Exception as e:
-        st.subheader("Player Info")
+        _render_player_info_section_intro(
+            "Player Info",
+            "Player Identity",
+            "Bio details could not be loaded from the live providers right now.",
+        )
         st.warning(
             "Player bio info could not be loaded from the live providers right now."
         )
@@ -603,7 +1016,11 @@ def info_tab(player):
         return
 
     if info is None or info.empty:
-        st.subheader("Player Info")
+        _render_player_info_section_intro(
+            "Player Info",
+            "Player Identity",
+            "No player bio information was returned from the provider.",
+        )
         st.warning("No player bio information was returned from the NBA stats service.")
         return
 
@@ -617,31 +1034,58 @@ def info_tab(player):
     team_id = info.loc[0, 'TEAM_ID']
     headshot_url = get_nba_headshot_url(player['id'], player_name=player.get("full_name"), player_source=player.get("source"))
     team_logo_url = f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg"
+    birthdate = info.loc[0, 'BIRTHDATE'] if 'BIRTHDATE' in info.columns else None
+    age = _age_from_birthdate(birthdate) if pd.notna(birthdate) and birthdate else None
+    height = info.loc[0, 'HEIGHT'] if 'HEIGHT' in info.columns else None
+    weight = info.loc[0, 'WEIGHT'] if 'WEIGHT' in info.columns else None
+    position = info.loc[0, 'POSITION'] if 'POSITION' in info.columns else None
+    college = info.loc[0, 'SCHOOL'] if 'SCHOOL' in info.columns else None
+    team_name = info.loc[0, 'TEAM_NAME'] if 'TEAM_NAME' in info.columns else None
+    jersey = info.loc[0, 'JERSEY'] if 'JERSEY' in info.columns else None
+    country = info.loc[0, 'COUNTRY'] if 'COUNTRY' in info.columns else None
+    draft_year = info.loc[0, 'DRAFT_YEAR'] if 'DRAFT_YEAR' in info.columns else None
+    draft_round = info.loc[0, 'DRAFT_ROUND'] if 'DRAFT_ROUND' in info.columns else None
+    draft_number = info.loc[0, 'DRAFT_NUMBER'] if 'DRAFT_NUMBER' in info.columns else None
+    college_logo_url = college_logos.get(college) if college and college in college_logos else None
 
-    st.subheader("Player Info")
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        _render_headshot_image(headshot_url, 220, player.get("full_name", "Player"))
-        if pd.notna(team_id) and info.attrs.get("provider") != "balldontlie":
-            st.image(team_logo_url, width=120)
-    with c2:
-        st.markdown(f"### {player['full_name']}")
-        birthdate = info.loc[0, 'BIRTHDATE'] if 'BIRTHDATE' in info.columns else None
-        if pd.notna(birthdate) and birthdate:
-            age = _age_from_birthdate(birthdate)
-            st.write(f"**Age:** {age}")
-        st.write(f"**Height:** {info.loc[0, 'HEIGHT']}")
-        weight = info.loc[0, 'WEIGHT']
-        st.write(f"**Weight:** {weight} lbs" if pd.notna(weight) and weight else "**Weight:** —")
-        st.write(f"**Position:** {info.loc[0, 'POSITION']}")
-        college = info.loc[0, 'SCHOOL']
-        st.write(f"**College:** {college}")
-        if college and college in college_logos:
-            st.image(college_logos[college], width=120)
+    summary_cards = [
+        ("Age", str(int(age)) if age is not None else "—"),
+        ("Height", str(height or "—")),
+        ("Weight", f"{int(weight)} lbs" if pd.notna(weight) and weight else "—"),
+        ("Position", str(position or "—")),
+    ]
+    team_details = [
+        ("Team", str(team_name or "—")),
+        ("Position", str(position or "—")),
+        ("Jersey", str(jersey or "—")),
+        ("Source", "NBA stats" if info.attrs.get("provider") == "nba_api" else (info.attrs.get("provider") or "Local cache")),
+    ]
+    draft_value = "—"
+    if any(pd.notna(x) and str(x).strip() for x in [draft_year, draft_round, draft_number]):
+        draft_value = f"{draft_year or '—'} • Round {draft_round or '—'} • Pick {draft_number or '—'}"
+    background_details = [
+        ("College", str(college or "—")),
+        ("Country", str(country or "—")),
+        ("Birthdate", str(str(birthdate).split("T")[0]) if pd.notna(birthdate) and birthdate else "—"),
+        ("Draft", draft_value),
+    ]
+
+    subtitle = "Identity, physical profile, and background context for the selected player."
+    _render_player_info_workspace(
+        player.get("full_name", "Player"),
+        headshot_url,
+        subtitle,
+        [f"Team: {team_name or '—'}", f"Position: {position or '—'}", f"Age: {int(age)}" if age is not None else "Age: —"],
+        summary_cards,
+        team_details,
+        background_details,
+        team_logo_url=team_logo_url if pd.notna(team_id) and info.attrs.get("provider") != "balldontlie" else None,
+        college_logo_url=college_logo_url,
+    )
 
 
 def balldontlie_info_tab(player):
-    st.subheader("Player Info")
+    _inject_player_info_redesign_css()
     # The search payload already contains enough fields to render the player card.
     # Avoid blocking the page on a second live request unless key fields are missing.
     needs_refresh = not any(player.get(k) for k in ["team_name", "position", "height", "college", "country"])
@@ -657,20 +1101,51 @@ def balldontlie_info_tab(player):
     if player.get("source"):
         st.caption(f"Selected player source: {player.get('source')}")
 
+    try:
+        info_df = get_player_info(player["id"], player_name=player.get("full_name"), player_source=player.get("source"))
+        info_row = info_df.iloc[0] if info_df is not None and not info_df.empty else pd.Series(dtype=object)
+    except Exception:
+        info_row = pd.Series(dtype=object)
+
     headshot_url = get_nba_headshot_url(player["id"], player_name=player.get("full_name"), player_source=player.get("source"))
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        _render_headshot_image(headshot_url, 220, player.get("full_name", "Player"))
-    with c2:
-        st.markdown(f"### {player.get('full_name', 'Unknown Player')}")
-        st.write(f"**Team:** {player.get('team_name') or '—'}")
-        st.write(f"**Position:** {player.get('position') or '—'}")
-        st.write(f"**Height:** {player.get('height') or '—'}")
-        weight = player.get("weight")
-        st.write(f"**Weight:** {weight} lbs" if weight else "**Weight:** —")
-        st.write(f"**Jersey:** {player.get('jersey_number') or '—'}")
-        st.write(f"**College:** {player.get('college') or '—'}")
-        st.write(f"**Country:** {player.get('country') or '—'}")
+    birthdate = (
+        info_row.get("BIRTHDATE")
+        if isinstance(info_row, pd.Series) and pd.notna(info_row.get("BIRTHDATE"))
+        else get_player_birthdate(player["id"], player_name=player.get("full_name"), player_source=player.get("source"))
+    )
+    age = _age_from_birthdate(birthdate) if birthdate else None
+    weight = player.get("weight")
+    summary_cards = [
+        ("Age", str(int(age)) if age is not None else "—"),
+        ("Height", str(player.get("height") or "—")),
+        ("Weight", f"{weight} lbs" if weight else "—"),
+        ("Position", str(player.get("position") or "—")),
+    ]
+    team_details = [
+        ("Team", str(player.get("team_name") or "—")),
+        ("Position", str(player.get("position") or "—")),
+        ("Jersey", str(player.get("jersey_number") or "—")),
+        ("Source", "balldontlie"),
+    ]
+    background_details = [
+        ("College", str(player.get("college") or "—")),
+        ("Country", str(player.get("country") or "—")),
+        ("Birthdate", str(birthdate.split("T")[0]) if birthdate else "—"),
+        ("Draft Year", str(info_row.get("DRAFT_YEAR") or player.get("draft_year") or "—")),
+    ]
+    _render_player_info_workspace(
+        player.get("full_name", "Unknown Player"),
+        headshot_url,
+        "Identity, physical profile, and background context for the selected player.",
+        [
+            f"Team: {player.get('team_name') or '—'}",
+            f"Position: {player.get('position') or '—'}",
+            f"Age: {int(age)}" if age is not None else "Age: —",
+        ],
+        summary_cards,
+        team_details,
+        background_details,
+    )
 
 
 def balldontlie_games_tab(player):
@@ -1308,7 +1783,7 @@ def _render_prop_context_dashboard(player: dict, latest_season_id: str) -> None:
             labels={"GAME_DATE": "Game Date", "value": metric_label, "variable": "Series"},
         )
         fig.add_hline(y=season_avg, line_dash="dash", line_color="rgba(255,255,255,0.5)", annotation_text="Season average")
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+        style_plotly_figure(fig, height=340, legend_title="", xaxis_title="Game Date", yaxis_title=metric_label)
         st.plotly_chart(fig, use_container_width=True)
 
 def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, percentile_df: pd.DataFrame) -> None:
@@ -1350,7 +1825,7 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                     markers=True,
                     title="Career Arc",
                 )
-                fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+                style_plotly_figure(fig, height=360, legend_title="", xaxis_title="Season", yaxis_title="Value")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("Not enough seasonal trend data to draw a career arc yet.")
@@ -1384,9 +1859,8 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                         title="Player DNA",
                         polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
                         showlegend=False,
-                        height=360,
-                        margin=dict(l=10, r=10, t=50, b=10),
                     )
+                    style_plotly_figure(radar, height=360, legend_title="")
                     st.plotly_chart(radar, use_container_width=True)
                 else:
                     st.info("Not enough percentile data to draw the player DNA chart.")
@@ -1440,7 +1914,7 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                     marker=dict(size=18, color="#f59e0b", line=dict(color="white", width=1.5)),
                     name=player_name,
                 ))
-            fig.update_layout(height=430, margin=dict(l=10, r=10, t=50, b=10))
+            style_plotly_figure(fig, height=430, legend_title="", xaxis_title="USG%", yaxis_title="TS%")
             st.plotly_chart(fig, use_container_width=True)
 
         cluster = league_df.copy()
@@ -1519,7 +1993,7 @@ def _render_player_storytelling_dashboard(player_name: str, adv: pd.DataFrame, p
                 )
                 if peers:
                     st.caption(f"Current cluster: **{cluster_name}**. Nearby archetype examples: {', '.join(peers)}.")
-            fig.update_layout(height=480, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+            style_plotly_figure(fig, height=480, legend_title="", xaxis_title="Creation Load", yaxis_title="Interior Impact")
             st.plotly_chart(fig, use_container_width=True)
 
 def validate_phase_output(phases: dict, seasons_available: list[str]) -> dict:
@@ -1683,7 +2157,7 @@ def _build_summary_view_options(player: dict, adv: pd.DataFrame) -> tuple[dict[s
 
 
 def stats_tab(player, model):
-    st.subheader("Player Stats")
+    _inject_stats_page_redesign_css()
 
     raw_pergame = get_player_career(
         player['id'],
@@ -1777,18 +2251,61 @@ def stats_tab(player, model):
     selected_summary = None
     display_adv = adv
     if summary_views:
-        selected_summary_label = st.selectbox(
-            "Summary view",
-            list(summary_views.keys()),
-            index=0,
-            key=f"summary_view_{_player_phase_state_key(player)}",
-        )
+        summary_view_key = f"summary_view_display_{_player_phase_state_key(player)}"
+        saved_summary_label = st.session_state.get(summary_view_key)
+        if saved_summary_label in summary_views:
+            selected_summary_label = saved_summary_label
+        else:
+            selected_summary_label = list(summary_views.keys())[0]
         selected_summary = summary_views[selected_summary_label]["summary"]
         display_adv = summary_views[selected_summary_label]["table_df"]
+
+    birth_year = _birth_year_for_player(player)
+    if display_adv is not None and not display_adv.empty:
+        display_adv = _add_age_column(_add_season_start(display_adv), birth_year)
 
     latest_src = raw_pergame if (raw_pergame is not None and not raw_pergame.empty) else adv
     if latest_src is not None and not latest_src.empty:
         latest = selected_summary if selected_summary is not None else latest_src.iloc[-1]
+        if isinstance(latest, pd.Series):
+            latest = latest.copy()
+        latest_age = pd.to_numeric(latest.get("AGE_APPROX"), errors="coerce")
+        if pd.isna(latest_age) and pd.notna(birth_year):
+            season_id = str(latest.get("SEASON_ID", ""))[:4]
+            if season_id.isdigit():
+                latest["AGE_APPROX"] = int(season_id) - int(birth_year)
+
+        _render_stats_workspace_hero(
+            player,
+            selected_summary_label,
+            summary_captions.get(selected_summary_label or "", "") if summary_captions else "",
+            latest,
+        )
+
+        st.markdown(
+            """
+            <div class="stats-os-view-shell">
+              <div class="stats-os-view-kicker">Workspace View</div>
+              <div class="stats-os-view-title">Choose the career window you want to evaluate</div>
+              <div class="stats-os-view-copy">Switch between latest season, peak season, prime, or full-career context without leaving the page.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        selected_summary_label = st.selectbox(
+            "Summary view",
+            list(summary_views.keys()),
+            index=list(summary_views.keys()).index(selected_summary_label) if summary_views and selected_summary_label in summary_views else 0,
+            key=summary_view_key,
+            label_visibility="collapsed",
+        )
+        selected_summary = summary_views[selected_summary_label]["summary"]
+        display_adv = summary_views[selected_summary_label]["table_df"]
+        if display_adv is not None and not display_adv.empty:
+            display_adv = _add_age_column(_add_season_start(display_adv), birth_year)
+        latest = selected_summary if selected_summary is not None else latest
+
         contract_df = get_balldontlie_player_contracts(
             player["id"],
             player_name=player.get("full_name"),
@@ -1805,11 +2322,16 @@ def stats_tab(player, model):
             player_name=player.get("full_name"),
             player_source=player.get("source"),
         )
-        hero_col, stats_col = st.columns([1, 3])
+        hero_col, stats_col = st.columns([1.05, 3.35], gap="large")
         with hero_col:
-            _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
-            st.caption(player.get("full_name", ""))
+            _render_headshot_image(headshot_url, 190, player.get("full_name", "Player"))
+            render_stat_text(player.get("full_name", ""), small=True)
         with stats_col:
+            _render_stats_section_intro(
+                "Performance Snapshot",
+                "Core Production",
+                "The fastest read on how this player scores, rebounds, creates, and converts possessions in the currently selected career window.",
+            )
             if selected_summary_label and selected_summary_label in summary_captions:
                 render_stat_text(summary_captions[selected_summary_label], small=True)
             latest_team_record = latest.get("TEAM_RECORD")
@@ -1847,10 +2369,12 @@ def stats_tab(player, model):
 
     with main_col:
         if display_adv is not None and not display_adv.empty:
-            birth_year = _birth_year_for_player(player)
-            display_adv = _add_age_column(_add_season_start(display_adv), birth_year)
             stats_df, number_cols, percent_cols = _make_readable_stats_table(display_adv)
-
+            _render_stats_section_intro(
+                "Season Log",
+                "Stat Table",
+                "A clean season-by-season record of the selected window, including age, team, team record, and core performance indicators.",
+            )
             render_html_table(
                 stats_df,
                 number_cols=number_cols,
@@ -1861,8 +2385,11 @@ def stats_tab(player, model):
             latest_season_id = str(display_adv.iloc[-1].get("SEASON_ID", "")) if "SEASON_ID" in display_adv.columns else ""
             impact_index = compute_impact_index(player["full_name"], display_adv)
             if impact_index:
-                st.markdown("### 🧠 Impact Index")
-                render_stat_text("A blended score of scoring, efficiency, playmaking, defense, rebounding, and team winning for the selected career window.", small=True)
+                _render_stats_section_intro(
+                    "Impact Model",
+                    "Impact Index",
+                    "A blended score of scoring, efficiency, playmaking, defense, rebounding, and team success, designed to summarize overall on-court footprint in this window.",
+                )
                 breakdown_df = impact_index.get("breakdown", pd.DataFrame())
                 if not breakdown_df.empty:
                     top_component = breakdown_df.sort_values("Score", ascending=False).iloc[0]
@@ -1892,14 +2419,17 @@ def stats_tab(player, model):
                         markers=True,
                         title="Impact Index Across the Selected Window",
                     )
-                    fig.update_layout(height=320, margin=dict(l=10, r=10, t=50, b=10))
+                    style_plotly_figure(fig, height=320, legend_title="", xaxis_title="Season", yaxis_title="Impact Score")
                     st.plotly_chart(fig, use_container_width=True)
 
             percentile_df = compute_player_percentile_context(player["full_name"], latest_season_id, display_adv)
             _render_player_storytelling_dashboard(player["full_name"], display_adv, percentile_df)
             if not percentile_df.empty:
-                st.markdown("### 📈 Percentile & Ranking Context")
-                render_stat_text("Latest-season context versus the league distribution from balldontlie season averages.", small=True)
+                _render_stats_section_intro(
+                    "League Context",
+                    "Percentile & Ranking Context",
+                    "Latest-season context versus the balldontlie league pool, so raw box-score numbers translate into real league standing.",
+                )
 
                 top_rows = percentile_df.head(6).copy()
                 summary_cols = st.columns(min(3, len(top_rows)))
@@ -1927,7 +2457,11 @@ def stats_tab(player, model):
 
             archetype = detect_player_archetype(player["full_name"], display_adv, percentile_df)
             if archetype:
-                st.markdown("### 🧩 Role Archetype")
+                _render_stats_section_intro(
+                    "Role Identity",
+                    "Role Archetype",
+                    "A role and style read on the player’s statistical identity, combining primary function, secondary role, and style tags.",
+                )
                 c1, c2 = st.columns([1.4, 1])
                 with c1:
                     st.metric("Primary Role", archetype["primary"])
@@ -1962,8 +2496,11 @@ def stats_tab(player, model):
 
             similar_df = find_similar_players(player["full_name"], latest_season_id, display_adv, limit=6)
             if not similar_df.empty:
-                st.markdown("### 🧬 Similar Player Finder")
-                render_stat_text("Closest latest-season statistical matches from the league-wide balldontlie season-average pool.", small=True)
+                _render_stats_section_intro(
+                    "Similarity Engine",
+                    "Similar Player Finder",
+                    "Closest latest-season statistical matches from the league-wide balldontlie season-average pool, designed to surface believable role and production comps.",
+                )
                 top_match = similar_df.iloc[0]
                 render_stat_text(
                     f"Closest match right now: {top_match['Player']} "

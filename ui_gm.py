@@ -1,3 +1,4 @@
+import html
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -65,6 +66,136 @@ _GM_SEARCHBOX_STYLE_OVERRIDES = {
     "dropdown": {"fill": "#9ca3af", "width": 22, "height": 22, "rotate": True},
     "clear": {"width": 18, "height": 18, "icon": "cross", "clearable": "always"},
 }
+
+
+def _inject_gm_page_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .gm-os-hero {
+          position: relative;
+          overflow: hidden;
+          padding: 22px 24px;
+          border-radius: 26px;
+          border: 1px solid rgba(99, 116, 156, 0.22);
+          background:
+            radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 30%),
+            radial-gradient(circle at left center, rgba(59, 130, 246, 0.12), transparent 26%),
+            linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+          box-shadow: 0 28px 54px rgba(3, 8, 24, 0.28);
+          margin-bottom: 1rem;
+        }
+        .gm-os-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.72rem;
+          color: rgba(148, 163, 184, 0.92);
+          font-weight: 700;
+          margin-bottom: 0.55rem;
+        }
+        .gm-os-title {
+          color: var(--text-color);
+          font-size: clamp(1.95rem, 2.8vw, 2.6rem);
+          line-height: 1.02;
+          font-weight: 800;
+          margin: 0;
+        }
+        .gm-os-subtitle {
+          color: var(--text-color);
+          opacity: 0.82;
+          font-size: 0.98rem;
+          line-height: 1.6;
+          max-width: 860px;
+          margin-top: 0.8rem;
+        }
+        .gm-os-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 1.05rem;
+        }
+        .gm-os-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.38rem;
+          padding: 0.46rem 0.78rem;
+          border-radius: 999px;
+          background: var(--secondary-background-color);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: var(--text-color);
+          font-size: 0.82rem;
+          font-weight: 650;
+        }
+        .gm-os-section {
+          margin: 1.35rem 0 0.8rem;
+        }
+        .gm-os-section-kicker {
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-size: 0.68rem;
+          color: rgba(148, 163, 184, 0.84);
+          font-weight: 700;
+          margin-bottom: 0.38rem;
+        }
+        .gm-os-section-title {
+          color: var(--text-color);
+          font-size: 1.45rem;
+          font-weight: 750;
+          line-height: 1.15;
+        }
+        .gm-os-section-copy {
+          color: var(--text-color);
+          opacity: 0.74;
+          font-size: 0.93rem;
+          line-height: 1.6;
+          max-width: 900px;
+          margin-top: 0.45rem;
+        }
+        @media (max-width: 900px) {
+          .gm-os-hero {
+            padding: 18px 18px;
+            border-radius: 22px;
+          }
+          .gm-os-title {
+            font-size: 1.6rem;
+          }
+          .gm-os-subtitle,
+          .gm-os-section-copy {
+            font-size: 0.9rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_gm_hero(title: str, subtitle: str, badges: list[str]) -> None:
+    badges_html = "".join(f'<span class="gm-os-badge">{html.escape(item)}</span>' for item in badges if item)
+    st.markdown(
+        f"""
+        <div class="gm-os-hero">
+          <div class="gm-os-kicker">Front Office Lab</div>
+          <h1 class="gm-os-title">{html.escape(title)}</h1>
+          <div class="gm-os-subtitle">{html.escape(subtitle)}</div>
+          <div class="gm-os-badges">{badges_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_gm_section_intro(kicker: str, title: str, copy: str) -> None:
+    st.markdown(
+        f"""
+        <div class="gm-os-section">
+          <div class="gm-os-section-kicker">{html.escape(kicker)}</div>
+          <div class="gm-os-section-title">{html.escape(title)}</div>
+          <div class="gm-os-section-copy">{html.escape(copy)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 _NBA_TEAM_OPTIONS = [
     "Atlanta Hawks (ATL)",
@@ -1043,8 +1174,7 @@ def render_player_trade_package_page() -> None:
 
 
 def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
-    if show_title:
-        st.subheader("GM / Team Building")
+    _inject_gm_page_css()
     gm_data = _load_player_gm_data(player)
     adv = gm_data["adv"]
     if adv is None or adv.empty:
@@ -1061,18 +1191,36 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
     lens = _contender_rebuild_lens(latest, impact, contract_snapshot, age_value)
     co_star = _best_co_star_profile(archetype, latest)
     gm_summary = _gm_snapshot_summary(player.get("full_name", "Player"), latest, impact, archetype, asset_label, timeline_label, lens)
+    current_token = _gm_player_signature(player)
     headshot_url = get_nba_headshot_url(
         player["id"],
         player_name=player.get("full_name"),
         player_source=player.get("source"),
     )
 
+    if show_title:
+        latest_team_record = latest.get("TEAM_RECORD")
+        _render_gm_hero(
+            player.get("full_name", "GM / Team Building"),
+            "Front-office tools for asset value, roster construction, trade planning, and timeline evaluation.",
+            [
+                f"Asset Class: {asset_label}",
+                f"Timeline: {timeline_label}",
+                f"Age: {age_value}" if age_value is not None else "Age: —",
+                f"Record: {latest_team_record}" if pd.notna(latest_team_record) and latest_team_record else "Record unavailable",
+            ],
+        )
+
     hero_col, summary_col = st.columns([1, 3])
     with hero_col:
         _render_headshot_image(headshot_url, 170, player.get("full_name", "Player"))
         st.caption(player.get("full_name", ""))
     with summary_col:
-        render_stat_text("Front-office tools for asset value, roster construction, and trade planning.", small=True)
+        _render_gm_section_intro(
+            "Focal Player",
+            "Front-Office Snapshot",
+            "A quick read on how this player behaves as an asset, team-building piece, and trade-value object before opening the deeper GM tools.",
+        )
         latest_team_record = latest.get("TEAM_RECORD")
         if pd.notna(latest_team_record) and latest_team_record:
             render_stat_text(f"Current team record: {latest_team_record}", small=True)
@@ -1106,7 +1254,11 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
         ai_col = None
 
     with main_col:
-        st.markdown("### 🧭 GM Snapshot")
+        _render_gm_section_intro(
+            "GM Snapshot",
+            "Asset Overview",
+            "A blended front-office read on contract load, impact, timeline fit, and how the player currently behaves in trade and roster-planning conversations.",
+        )
         render_stat_text(gm_summary, small=True)
         _render_hover_stat_cards(
             [
@@ -1120,7 +1272,11 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
         st.caption(asset_reason)
         st.caption(timeline_reason)
 
-        st.markdown("### 💰 Contract + Production Value")
+        _render_gm_section_intro(
+            "Contract Context",
+            "Contract + Production Value",
+            "Measure how the salary slot lines up with impact, guaranteed money, and long-term surplus value.",
+        )
         cap_hit_m = _cap_hit_millions(contract_snapshot)
         impact_score = _safe_num(impact.get("score"))
         cost_efficiency = None if cap_hit_m in (None, 0) or impact_score is None else impact_score / cap_hit_m
@@ -1138,7 +1294,11 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
             small=True,
         )
 
-        st.markdown("### 🏁 Contender vs Rebuild Lens")
+        _render_gm_section_intro(
+            "Timeline Lens",
+            "Contender vs Rebuild Lens",
+            "Read the player through two different front-office timelines so the same asset can be judged by competitive window, not just raw talent.",
+        )
         _render_hover_stat_cards(
             [
                 ("Contender Score", f"{lens['contender_score']:.1f}"),
@@ -1153,7 +1313,11 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
             small=True,
         )
 
-        st.markdown("### 🤝 Best Co-Star Finder")
+        _render_gm_section_intro(
+            "Roster Construction",
+            "Best Co-Star Finder",
+            "Identify the star profile, offensive burden, and defensive support structure that best unlock this player in a high-level roster build.",
+        )
         _render_hover_stat_cards(
             [
                 ("Ideal Co-Star", co_star["title"]),
@@ -1165,7 +1329,11 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
         render_stat_text(f"Best defensive partner: {co_star['defense']}")
         render_stat_text(f"Bad fit warning: {co_star['bad_fit']}", small=True)
 
-        st.markdown("### 🧱 Roster Fit Snapshot")
+        _render_gm_section_intro(
+            "Role Fit",
+            "Roster Fit Snapshot",
+            "A fast front-office read on where the player fits on a good team, what style identity they bring, and which impact tags shape roster decisions.",
+        )
         role_text = archetype.get("primary") or "—"
         style_text = ", ".join(archetype.get("style_tags", [])[:4]) or "—"
         impact_tags = ", ".join(archetype.get("impact_tags", [])[:3]) or "—"
@@ -1173,14 +1341,21 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
         render_stat_text(f"Style identity: {style_text}.")
         render_stat_text(f"Impact tags shaping roster decisions: {impact_tags}.", small=True)
 
-        st.markdown("### 🔁 Trade Package Simulator")
+        _render_gm_section_intro(
+            "Trade Machine",
+            "Trade Package Simulator",
+            "Build multi-team asset deals with players, picks, swaps, and non-player assets, then judge them through a real team-building lens.",
+        )
         _render_trade_package_builder(player, model, "gm_player")
 
     if ai_col is not None:
         with ai_col:
             st.markdown('<div class="sticky-gm-ai-rail"></div>', unsafe_allow_html=True)
-            st.markdown("### 🧠 GM Tools")
-            st.caption("Decision-focused tools for front-office context.")
+            _render_gm_section_intro(
+                "AI Workspace",
+                "GM Tools",
+                "Decision-focused front-office pages live here so the main GM workspace stays centered on the asset and roster-building context.",
+            )
             with st.expander("Trade Value Analyzer", expanded=False):
                 if model:
                     if st.button("Open Trade Value Analysis", key=f"gm_trade_value_button_{current_token}", use_container_width=True):
@@ -1268,15 +1443,24 @@ def gm_tab(player: dict, model, *, show_title: bool = True) -> None:
 
 
 def render_gm_workspace(model) -> None:
-    st.title("🏗 GM / Team Building")
-    render_stat_text(
-        "A front-office workspace for league-wide trade ideas, asset value, timeline decisions, and roster construction.",
-        small=True,
+    _inject_gm_page_css()
+    gm_player = st.session_state.get("gm_player")
+    _render_gm_hero(
+        "GM / Team Building",
+        "A front-office workspace for league-wide trade ideas, asset value, timeline decisions, roster construction, and multi-team deal simulation.",
+        [
+            "Mode: League-wide GM lab",
+            f"Focal Player: {gm_player.get('full_name')}" if gm_player else "Focal Player: None selected",
+            "Assets: Players, picks, swaps, non-player pieces",
+        ],
     )
-    st.markdown("### 🔁 Trade Package Simulator")
+    _render_gm_section_intro(
+        "Trade Machine",
+        "Trade Package Simulator",
+        "Build the deal first, then judge what every team is buying, giving up, and risking from a real front-office perspective.",
+    )
     _render_trade_package_builder(st.session_state.get("gm_player"), model, "gm_workspace")
 
-    gm_player = st.session_state.get("gm_player")
     signature = _gm_player_signature(gm_player)
     if st.session_state.get("_gm_player_signature") != signature:
         _clear_gm_outputs()
@@ -1284,10 +1468,10 @@ def render_gm_workspace(model) -> None:
 
     if gm_player:
         st.divider()
-        st.markdown("### 🎯 Focal Player GM View")
-        render_stat_text(
+        _render_gm_section_intro(
+            "Focal Player",
+            "Player-Centered GM View",
             f"Using {gm_player.get('full_name', 'the selected player')} as the focal player for trade value, co-star fit, and roster-building analysis.",
-            small=True,
         )
         gm_tab(gm_player, model, show_title=False)
     else:

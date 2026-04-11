@@ -57,9 +57,340 @@ from ui_compare import (
 
 ensure_page_config()
 
+
+def _inject_modern_basketball_os_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(245, 158, 11, 0.10), transparent 28%),
+                radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 26%),
+                linear-gradient(180deg, var(--background-color) 0%, var(--background-color) 100%);
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            background: transparent;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            background:
+                radial-gradient(circle at top, rgba(245, 158, 11, 0.08), transparent 18%),
+                linear-gradient(180deg, var(--secondary-background-color) 0%, var(--background-color) 100%);
+            border-right: 1px solid rgba(148, 163, 184, 0.16);
+        }
+        [data-testid="stSidebar"] {
+            min-width: 320px;
+            max-width: 340px;
+        }
+        .os-hero {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(245, 158, 11, 0.14), transparent 28%),
+                radial-gradient(circle at 100% 0%, rgba(59, 130, 246, 0.16), transparent 28%),
+                linear-gradient(135deg, var(--secondary-background-color) 0%, var(--background-color) 100%);
+            border-radius: 24px;
+            padding: 1.25rem 1.35rem 1.15rem 1.35rem;
+            margin-bottom: 1.1rem;
+            box-shadow: 0 24px 60px rgba(2, 6, 23, 0.22);
+        }
+        .os-hero-title {
+            color: var(--text-color);
+            font-size: clamp(1.55rem, 1.6vw, 2rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 0.45rem;
+        }
+        .os-hero-subtitle {
+            color: var(--text-color);
+            opacity: 0.78;
+            font-size: 0.98rem;
+            line-height: 1.55;
+            max-width: 72ch;
+        }
+        .os-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 1rem;
+        }
+        .os-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            border-radius: 999px;
+            padding: 0.42rem 0.78rem;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            background: var(--secondary-background-color);
+            color: var(--text-color);
+            font-size: 0.83rem;
+            font-weight: 600;
+        }
+        .os-chip.is-accent {
+            background: rgba(245, 158, 11, 0.14);
+            color: #fcd34d;
+            border-color: rgba(245, 158, 11, 0.22);
+        }
+        .os-chip.is-info {
+            background: rgba(59, 130, 246, 0.14);
+            color: #93c5fd;
+            border-color: rgba(59, 130, 246, 0.22);
+        }
+        div[data-testid="stVerticalBlock"] > div:has(> .os-sidebar-section) {
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 18px;
+            background: linear-gradient(180deg, var(--secondary-background-color), var(--background-color));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+            padding: 0.9rem 0.9rem 0.45rem 0.9rem;
+            margin-bottom: 0.9rem;
+        }
+        .os-sidebar-brand {
+            position: relative;
+            overflow: hidden;
+            border-radius: 22px;
+            padding: 1rem 1rem 0.95rem 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            background:
+                radial-gradient(circle at top left, rgba(245, 158, 11, 0.14), transparent 28%),
+                radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.16), transparent 30%),
+                linear-gradient(145deg, var(--secondary-background-color), var(--background-color));
+            box-shadow: 0 14px 35px rgba(2, 6, 23, 0.18);
+        }
+        .os-sidebar-brand::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent 28%);
+            pointer-events: none;
+        }
+        .os-sidebar-kicker {
+            color: rgba(226, 232, 240, 0.72);
+            font-size: 0.68rem;
+            font-weight: 800;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 0.55rem;
+        }
+        .os-sidebar-title {
+            color: var(--text-color);
+            font-size: 1.05rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin-bottom: 0.35rem;
+        }
+        .os-sidebar-subtitle {
+            color: var(--text-color);
+            opacity: 0.72;
+            font-size: 0.84rem;
+            line-height: 1.5;
+        }
+        .os-search-shell {
+            position: relative;
+            overflow: hidden;
+            border-radius: 20px;
+            padding: 0.95rem 1rem 0.85rem 1rem;
+            margin-bottom: 0.2rem;
+            border: 1px solid rgba(245, 158, 11, 0.16);
+            background:
+                radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 30%),
+                linear-gradient(160deg, var(--secondary-background-color), var(--background-color));
+            box-shadow: 0 18px 42px rgba(2, 6, 23, 0.22);
+        }
+        .os-search-shell::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent 30%);
+            pointer-events: none;
+        }
+        .os-search-kicker {
+            color: rgba(251, 191, 36, 0.86);
+            font-size: 0.68rem;
+            font-weight: 800;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+        .os-search-title {
+            color: var(--text-color);
+            font-size: 1.22rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 0.28rem;
+        }
+        .os-search-subtitle {
+            color: var(--text-color);
+            opacity: 0.72;
+            font-size: 0.82rem;
+            line-height: 1.5;
+        }
+        .os-sidebar-section {
+            color: rgba(226, 232, 240, 0.84);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            margin-bottom: 0.65rem;
+            opacity: 0.9;
+        }
+        [data-testid="stSidebar"] hr {
+            margin: 0.95rem 0 1rem 0;
+            border-color: rgba(148, 163, 184, 0.12);
+        }
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            letter-spacing: -0.02em;
+        }
+        [data-testid="stSidebar"] .stCaptionContainer {
+            color: rgba(226, 232, 240, 0.62);
+        }
+        [data-testid="stSidebar"] label[data-testid="stWidgetLabel"] {
+            display: none;
+        }
+        div[data-baseweb="select"] > div,
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stTextArea"] textarea,
+        div[data-testid="stNumberInput"] input {
+            border-radius: 14px !important;
+        }
+        div[data-testid="stButton"] > button,
+        div[data-testid="stDownloadButton"] > button {
+            border-radius: 14px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            box-shadow: none;
+        }
+        div[data-testid="stButton"] > button:hover {
+            border-color: rgba(245, 158, 11, 0.35);
+        }
+        div[role="radiogroup"] {
+            gap: 0.35rem;
+            padding: 0.3rem;
+            border-radius: 18px;
+            background: rgba(15, 23, 42, 0.64);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+        }
+        div[role="radiogroup"] label {
+            border-radius: 12px !important;
+            padding: 0.28rem 0.72rem !important;
+            background: transparent;
+        }
+        div[role="radiogroup"] label:has(input:checked) {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(59, 130, 246, 0.18));
+            border: 1px solid rgba(248, 250, 252, 0.1);
+        }
+        .block-container {
+            padding-top: 1.3rem;
+            padding-bottom: 2rem;
+            max-width: 1480px;
+        }
+        @media (max-width: 1100px) {
+            [data-testid="stSidebar"] {
+                min-width: 290px;
+                max-width: 310px;
+            }
+            .os-hero {
+                border-radius: 20px;
+            }
+        }
+        @media (max-width: 980px) {
+            .block-container {
+                padding-top: 1rem;
+                padding-bottom: 1.5rem;
+            }
+            .os-hero {
+                padding: 1rem 1rem 0.95rem 1rem;
+                border-radius: 20px;
+            }
+            .os-hero-title {
+                font-size: 1.35rem;
+            }
+            .os-search-shell,
+            .os-sidebar-brand {
+                padding: 0.9rem 0.9rem 0.85rem 0.9rem;
+                border-radius: 18px;
+            }
+        }
+        @media (max-width: 760px) {
+            [data-testid="stSidebar"] {
+                min-width: 100%;
+                max-width: 100%;
+            }
+            div[data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap;
+            }
+            div[data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 0 !important;
+            }
+            .os-chip-row {
+                gap: 0.45rem;
+            }
+            .os-chip {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_modern_os_hero(section: str, selected_player: dict | None, gm_player: dict | None) -> None:
+    if section == "🏗 GM / Team Building":
+        title = "Modern Basketball OS: GM Lab"
+        subtitle = (
+            "A front-office workspace for multi-team trade design, asset valuation, cap-context thinking, "
+            "and roster-building decisions that feel closer to a real NBA war room."
+        )
+        chips = [
+            ('Mode: Team Building', "accent"),
+            (f"Focal Player: {(gm_player or {}).get('full_name', 'None')}", "info"),
+            ("Asset-Based Trade Builder", None),
+        ]
+    else:
+        title = "Modern Basketball OS"
+        subtitle = (
+            "A premium basketball intelligence workspace for player evaluation, compare analysis, fantasy, "
+            "value and props, and AI-assisted scouting built into one unified product."
+        )
+        chips = [
+            ('Mode: Player Explorer', "accent"),
+            (f"Current Player: {(selected_player or {}).get('full_name', 'None selected')}", "info"),
+            ("AI + Stats + Decision Tools", None),
+        ]
+
+    chip_html = []
+    for text, variant in chips:
+        cls = "os-chip"
+        if variant == "accent":
+            cls += " is-accent"
+        elif variant == "info":
+            cls += " is-info"
+        chip_html.append(f'<span class="{cls}">{text}</span>')
+
+    st.markdown(
+        f"""
+        <div class="os-hero">
+            <div class="os-hero-title">{title}</div>
+            <div class="os-hero-subtitle">{subtitle}</div>
+            <div class="os-chip-row">
+                {''.join(chip_html)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 if AI_SETUP_ERROR:
     st.warning("AI is not fully configured in this deployment right now.")
     st.caption(f"Setup details: {AI_SETUP_ERROR}")
+
+_inject_modern_basketball_os_css()
 
 
 _VIEW_TO_TOKEN = {
@@ -101,53 +432,63 @@ _CUSTOM_TAG_OPTIONS = custom_stat_finder_tag_labels()
 _SEARCHBOX_STYLE_OVERRIDES = {
     "searchbox": {
         "control": {
-            "backgroundColor": "#111827",
-            "borderColor": "rgba(255,255,255,0.12)",
-            "borderRadius": 12,
-            "minHeight": 46,
-            "boxShadow": "none",
+            "backgroundColor": "rgba(10,16,30,0.64)",
+            "borderColor": "rgba(148,163,184,0.08)",
+            "borderRadius": 18,
+            "minHeight": 50,
+            "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.02)",
         },
         "input": {
-            "color": "#f9fafb",
+            "color": "#f8fafc",
             "fontSize": 15,
+            "fontWeight": 600,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
         },
         "placeholder": {
-            "color": "rgba(255,255,255,0.45)",
+            "color": "rgba(226,232,240,0.38)",
             "fontSize": 14,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontStyle": "normal",
         },
         "singleValue": {
-            "color": "#f9fafb",
+            "color": "#f8fafc",
             "fontSize": 15,
-            "fontWeight": 500,
+            "fontWeight": 700,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
         },
         "menu": {
-            "backgroundColor": "#0f172a",
-            "borderRadius": 12,
+            "backgroundColor": "#0b1220",
+            "borderRadius": 16,
             "overflow": "hidden",
-            "border": "1px solid rgba(255,255,255,0.08)",
-            "boxShadow": "0 18px 40px rgba(0,0,0,0.35)",
+            "border": "1px solid rgba(148,163,184,0.12)",
+            "boxShadow": "0 24px 48px rgba(2,6,23,0.42)",
         },
         "menuList": {
-            "backgroundColor": "#0f172a",
+            "backgroundColor": "#0b1220",
             "paddingTop": 6,
             "paddingBottom": 6,
         },
         "option": {
             "fontSize": 14,
-            "paddingTop": 10,
-            "paddingBottom": 10,
-            "paddingLeft": 12,
-            "paddingRight": 12,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontWeight": 600,
+            "letterSpacing": "-0.01em",
+            "paddingTop": 11,
+            "paddingBottom": 11,
+            "paddingLeft": 14,
+            "paddingRight": 14,
         },
         "noOptionsMessage": {
             "color": "rgba(255,255,255,0.55)",
             "fontSize": 13,
+            "fontFamily": "Inter, SF Pro Display, Segoe UI, sans-serif",
+            "fontStyle": "normal",
         },
     },
     "dropdown": {
-        "fill": "#9ca3af",
-        "width": 22,
-        "height": 22,
+        "fill": "rgba(226,232,240,0.72)",
+        "width": 20,
+        "height": 20,
         "rotate": True,
     },
     "clear": {
@@ -361,13 +702,33 @@ app_section = st.radio(
 )
 
 with st.sidebar:
+    st.markdown(
+        """
+        <div class="os-sidebar-brand">
+            <div class="os-sidebar-kicker">Modern Basketball OS</div>
+            <div class="os-sidebar-title">NBA Intelligence Workspace</div>
+            <div class="os-sidebar-subtitle">Search, screen, compare, and simulate roster decisions from one polished control rail.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     if app_section == "🏀 Player Explorer":
-        st.header("🔍 Search Player")
+        st.markdown('<div class="os-sidebar-section">Player Explorer</div>', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="os-search-shell">
+                <div class="os-search-kicker">Featured Search</div>
+                <div class="os-search-title">Find Any Player</div>
+                <div class="os-search-subtitle">Jump straight into player analysis with live league-wide autocomplete.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if st_searchbox is not None:
             selected_player = st_searchbox(
                 _player_search_suggestions,
-                label="Enter an NBA player's name",
-                placeholder="Start typing a player name...",
+                label="",
+                placeholder="Type a player...",
                 key="player_searchbox",
                 clear_on_submit=False,
                 edit_after_submit="option",
@@ -381,7 +742,7 @@ with st.sidebar:
             search_clicked = False
             name = ""
         else:
-            name = st.text_input("Enter an NBA player's name", key="player_search_name")
+            name = st.text_input("", key="player_search_name", placeholder="Type a player...")
             live_suggestions = []
             if name and len(name.strip()) >= 2:
                 try:
@@ -405,6 +766,7 @@ with st.sidebar:
 
             search_clicked = st.button("Search")
         st.divider()
+        st.markdown('<div class="os-sidebar-section">Search Tools</div>', unsafe_allow_html=True)
         st.subheader("Natural Language Search")
         nl_preset = st.selectbox(
             "Choose an archetype / prompt",
@@ -422,6 +784,7 @@ with st.sidebar:
         )
         nl_search_clicked = st.button("Find Players", use_container_width=True)
         st.divider()
+        st.markdown('<div class="os-sidebar-section">Custom Screener</div>', unsafe_allow_html=True)
         st.subheader("Custom Stat Finder")
         rule_controls_left, rule_controls_right = st.columns(2)
         with rule_controls_left:
@@ -500,6 +863,7 @@ with st.sidebar:
             cs_limit = st.slider("Result limit", min_value=5, max_value=40, value=20, step=1, key="custom_stat_limit")
             custom_search_clicked = st.form_submit_button("Run Custom Finder", use_container_width=True)
         st.divider()
+        st.markdown('<div class="os-sidebar-section">Saved Context</div>', unsafe_allow_html=True)
         st.subheader("Watchlist")
         watchlist_players = get_watchlist_players()
         current_player = st.session_state.get("player")
@@ -541,6 +905,7 @@ with st.sidebar:
         else:
             st.caption("Save players here for quick access later.")
         st.divider()
+        st.markdown('<div class="os-sidebar-section">System</div>', unsafe_allow_html=True)
         st.subheader("API Status")
         run_balldontlie_check = st.button("Check balldontlie API", use_container_width=True)
 
@@ -556,13 +921,14 @@ with st.sidebar:
                 st.warning("balldontlie looks slow or unavailable right now.")
                 st.caption(f"{balldontlie_health.get('error_type', 'Error')}: {balldontlie_health.get('message', 'Unknown error')}")
     else:
+        st.markdown('<div class="os-sidebar-section">GM Workspace</div>', unsafe_allow_html=True)
         st.header("🏗 GM Workspace")
         st.caption("Set a focal player if you want player-specific trade value, co-star, and roster-fit analysis.")
         if st_searchbox is not None:
             selected_gm_player = st_searchbox(
                 _player_search_suggestions,
-                label="Set focal player",
-                placeholder="Start typing a player name...",
+                label="",
+                placeholder="Type a player...",
                 key="gm_player_searchbox",
                 clear_on_submit=False,
                 edit_after_submit="option",
@@ -574,7 +940,7 @@ with st.sidebar:
                     _open_gm_player(selected_gm_player)
                     st.rerun()
         else:
-            gm_name = st.text_input("Set focal player", key="gm_player_search_name")
+            gm_name = st.text_input("", key="gm_player_search_name", placeholder="Type a player...")
             gm_live_suggestions = []
             if gm_name and len(gm_name.strip()) >= 2:
                 try:
@@ -813,6 +1179,7 @@ if app_section == "🏀 Player Explorer" and st.session_state["matches"]:
         st.session_state["active_view"] = "📊 Stats"
 
 if app_section == "🏗 GM / Team Building":
+    _render_modern_os_hero(app_section, st.session_state.get("player"), st.session_state.get("gm_player"))
     if st.session_state.get("player_report_mode") == "trade-value":
         render_player_trade_value_page()
         _sync_share_state_to_url()
@@ -831,6 +1198,7 @@ if app_section == "🏗 GM / Team Building":
         st.stop()
     render_gm_workspace(model)
 elif st.session_state["player"]:
+    _render_modern_os_hero(app_section, st.session_state.get("player"), st.session_state.get("gm_player"))
     if (
         st.session_state.get("active_view") == "🤝 Compare Players"
         and st.session_state.get("compare_report_mode") == "scouting"
@@ -948,6 +1316,7 @@ elif st.session_state["player"]:
         render_compare_tab(st.session_state["player"], model)
 else:
     if app_section == "🏀 Player Explorer":
+        _render_modern_os_hero(app_section, st.session_state.get("player"), st.session_state.get("gm_player"))
         st.info("Use the sidebar to search for a player.")
 
 _sync_share_state_to_url()
