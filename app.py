@@ -54,6 +54,7 @@ from ui_compare import (
     render_compare_ai_chat_page,
     render_compare_debate_page,
 )
+from ui_draft import render_draft_workspace
 
 ensure_page_config()
 
@@ -352,6 +353,17 @@ def _render_modern_os_hero(section: str, selected_player: dict | None, gm_player
             (f"Focal Player: {(gm_player or {}).get('full_name', 'None')}", "info"),
             ("Asset-Based Trade Builder", None),
         ]
+    elif section == "🎓 NBA Draft":
+        title = "Modern Basketball OS: Prospect Lab"
+        subtitle = (
+            "A draft workspace for prospect search, AI translation, consensus context, ESPN mock tracking, "
+            "and player-by-player NBA projection work."
+        )
+        chips = [
+            ('Mode: NBA Draft', "accent"),
+            ("Search Any NCAA Player", "info"),
+            ("AI + Consensus + ESPN Mock", None),
+        ]
     else:
         title = "Modern Basketball OS"
         subtitle = (
@@ -401,7 +413,7 @@ _VIEW_TO_TOKEN = {
     "🤝 Compare Players": "compare",
 }
 _TOKEN_TO_VIEW = {token: label for label, token in _VIEW_TO_TOKEN.items()}
-_APP_SECTIONS = ["🏀 Player Explorer", "🏗 GM / Team Building"]
+_APP_SECTIONS = ["🏀 Player Explorer", "🏗 GM / Team Building", "🎓 NBA Draft"]
 _NL_ARCHETYPE_OPTIONS = [
     "Custom search",
     "3 and D",
@@ -920,7 +932,7 @@ with st.sidebar:
             else:
                 st.warning("balldontlie looks slow or unavailable right now.")
                 st.caption(f"{balldontlie_health.get('error_type', 'Error')}: {balldontlie_health.get('message', 'Unknown error')}")
-    else:
+    elif app_section == "🏗 GM / Team Building":
         st.markdown('<div class="os-sidebar-section">GM Workspace</div>', unsafe_allow_html=True)
         st.header("🏗 GM Workspace")
         st.caption("Set a focal player if you want player-specific trade value, co-star, and roster-fit analysis.")
@@ -973,6 +985,19 @@ with st.sidebar:
                     st.session_state["gm_player"] = None
                     st.session_state["player_report_mode"] = None
                     st.rerun()
+    else:
+        st.markdown('<div class="os-sidebar-section">Draft Expansion</div>', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="os-search-shell">
+                <div class="os-search-kicker">Prospect Lab</div>
+                <div class="os-search-title">NBA Draft Foundation</div>
+                <div class="os-search-subtitle">Search any current NCAA player, track ESPN’s latest mock, and use AI as the default translation layer for how a prospect projects.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("Add your `BALLDONTLIE_NCAAB_API_KEY` to secrets or env vars if live NCAAB search is not already active.")
 
 search_clicked = locals().get("search_clicked", False)
 nl_search_clicked = locals().get("nl_search_clicked", False)
@@ -1197,6 +1222,9 @@ if app_section == "🏗 GM / Team Building":
         _sync_share_state_to_url()
         st.stop()
     render_gm_workspace(model)
+elif app_section == "🎓 NBA Draft":
+    _render_modern_os_hero(app_section, st.session_state.get("player"), st.session_state.get("gm_player"))
+    render_draft_workspace(model)
 elif st.session_state["player"]:
     _render_modern_os_hero(app_section, st.session_state.get("player"), st.session_state.get("gm_player"))
     if (
